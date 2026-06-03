@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'https://esm.sh/react@19.1.0';
+import React, { useMemo, useRef, useState } from 'https://esm.sh/react@19.1.0';
 import { createRoot } from 'https://esm.sh/react-dom@19.1.0/client';
+import * as XLSX from 'https://esm.sh/xlsx@0.18.5';
 
 const h = React.createElement;
 const STORAGE_KEY = 'car-flip-manager-cars';
@@ -19,6 +20,29 @@ const statusOptions = [
   { value: 'sold', label: statusLabels.sold },
 ];
 
+const excelColumns = [
+  { key: 'vin', header: 'VIN' },
+  { key: 'make', header: 'Марка' },
+  { key: 'model', header: 'Модель' },
+  { key: 'year', header: 'Год' },
+  { key: 'purchaseDate', header: 'Дата покупки' },
+  { key: 'purchasePrice', header: 'Покупка, ₽' },
+  { key: 'deliveryCost', header: 'Доставка, ₽' },
+  { key: 'repairCost', header: 'Ремонт, ₽' },
+  { key: 'partsCost', header: 'Запчасти, ₽' },
+  { key: 'extraExpenses', header: 'Доп. расходы, ₽' },
+  { key: 'totalCost', header: 'Общая себестоимость, ₽' },
+  { key: 'plannedSalePrice', header: 'Планируемая цена продажи, ₽' },
+  { key: 'actualSalePrice', header: 'Фактическая цена продажи, ₽' },
+  { key: 'netProfit', header: 'Чистая прибыль, ₽' },
+  { key: 'roi', header: 'Рентабельность, %' },
+  { key: 'saleDate', header: 'Дата продажи' },
+  { key: 'buyerContact', header: 'Контакт покупателя' },
+  { key: 'notes', header: 'Заметки' },
+  { key: 'status', header: 'Статус' },
+  { key: 'photo', header: 'Фото (Data URL)' },
+];
+
 const initialCars = [
   {
     id: 'demo-honda-accord',
@@ -27,13 +51,16 @@ const initialCars = [
     model: 'Accord',
     year: '2019',
     purchaseDate: '2026-01-18',
-    purchasePrice: '8200',
-    deliveryCost: '750',
-    repairCost: '1300',
-    partsCost: '520',
-    extraExpenses: '180',
-    salePrice: '12400',
+    purchasePrice: '740000',
+    deliveryCost: '68000',
+    repairCost: '117000',
+    partsCost: '47000',
+    extraExpenses: '16000',
+    plannedSalePrice: '1120000',
+    actualSalePrice: '1115000',
     saleDate: '2026-03-02',
+    buyerContact: '+7 999 123-45-67, Иван',
+    notes: 'После ремонта подвески и полировки кузова продан постоянному клиенту.',
     status: 'sold',
     photo: '',
   },
@@ -44,13 +71,16 @@ const initialCars = [
     model: '328i',
     year: '2020',
     purchaseDate: '2026-04-09',
-    purchasePrice: '11700',
-    deliveryCost: '900',
-    repairCost: '2100',
-    partsCost: '780',
-    extraExpenses: '260',
-    salePrice: '',
+    purchasePrice: '1050000',
+    deliveryCost: '81000',
+    repairCost: '189000',
+    partsCost: '70000',
+    extraExpenses: '23000',
+    plannedSalePrice: '1550000',
+    actualSalePrice: '',
     saleDate: '',
+    buyerContact: '',
+    notes: 'В работе: заказаны передний бампер и комплект фар.',
     status: 'repair',
     photo: '',
   },
@@ -67,47 +97,134 @@ const emptyForm = {
   repairCost: '',
   partsCost: '',
   extraExpenses: '',
-  salePrice: '',
+  plannedSalePrice: '',
+  actualSalePrice: '',
   saleDate: '',
+  buyerContact: '',
+  notes: '',
   status: 'bought',
   photo: '',
 };
 
+function normalizeCar(car) {
+  return {
+    ...emptyForm,
+    ...car,
+    id: car.id || crypto.randomUUID(),
+    vin: String(car.vin || '').trim().toUpperCase(),
+    plannedSalePrice: car.plannedSalePrice ?? '',
+    actualSalePrice: car.actualSalePrice ?? car.salePrice ?? '',
+    buyerContact: car.buyerContact ?? '',
+    notes: car.notes ?? '',
+    status: statusLabels[car.status] ? car.status : 'bought',
+  };
+}
+
 function loadCars() {
   try {
     const savedCars = localStorage.getItem(STORAGE_KEY);
-    return savedCars ? JSON.parse(savedCars) : initialCars;
+    return savedCars ? JSON.parse(savedCars).map(normalizeCar) : initialCars;
   } catch {
     return initialCars;
   }
 }
 
 function toNumber(value) {
-  const normalized = Number(String(value || '').replace(',', '.'));
+  const normalized = Number(String(value || '').replace(/\s/g, '').replace(',', '.'));
   return Number.isFinite(normalized) ? normalized : 0;
 }
 
 function calculateTotals(car) {
-  const investment =
+  const totalCost =
     toNumber(car.purchasePrice) +
     toNumber(car.deliveryCost) +
     toNumber(car.repairCost) +
     toNumber(car.partsCost) +
     toNumber(car.extraExpenses);
-  const profit = toNumber(car.salePrice) > 0 ? toNumber(car.salePrice) - investment : 0;
-  return { investment, profit };
+  const actualSalePrice = toNumber(car.actualSalePrice ?? car.salePrice);
+  const hasActualSale = actualSalePrice > 0;
+  const netProfit = hasActualSale ? actualSalePrice - totalCost : 0;
+  const roi = hasActualSale && totalCost > 0 ? (netProfit / totalCost) * 100 : 0;
+  return { totalCost, netProfit, roi, actualSalePrice, hasActualSale };
 }
 
 function formatMoney(value) {
-  return new Intl.NumberFormat('ru-RU', {
-    style: 'currency',
-    currency: 'USD',
-    maximumFractionDigits: 0,
-  }).format(value);
+  return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(value)} ₽`;
+}
+
+function formatPercent(value) {
+  return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value)}%`;
 }
 
 function icon(symbol) {
   return h('span', { className: 'icon', 'aria-hidden': 'true' }, symbol);
+}
+
+function downloadFile(content, fileName, type) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function createExcelRow(car) {
+  const { totalCost, netProfit, roi } = calculateTotals(car);
+  return {
+    vin: car.vin,
+    make: car.make,
+    model: car.model,
+    year: car.year,
+    purchaseDate: car.purchaseDate,
+    purchasePrice: toNumber(car.purchasePrice),
+    deliveryCost: toNumber(car.deliveryCost),
+    repairCost: toNumber(car.repairCost),
+    partsCost: toNumber(car.partsCost),
+    extraExpenses: toNumber(car.extraExpenses),
+    totalCost,
+    plannedSalePrice: toNumber(car.plannedSalePrice),
+    actualSalePrice: toNumber(car.actualSalePrice),
+    netProfit,
+    roi: Number(roi.toFixed(1)),
+    saleDate: car.saleDate,
+    buyerContact: car.buyerContact,
+    notes: car.notes,
+    status: statusLabels[car.status] || car.status,
+    photo: car.photo,
+  };
+}
+
+function getImportValue(row, key) {
+  const column = excelColumns.find((item) => item.key === key);
+  return row[column?.header] ?? row[key] ?? '';
+}
+
+function parseImportedCars(rows) {
+  const statusByLabel = Object.fromEntries(Object.entries(statusLabels).map(([value, label]) => [label, value]));
+  return rows
+    .map((row) => normalizeCar({
+      id: row.id || crypto.randomUUID(),
+      vin: getImportValue(row, 'vin'),
+      make: getImportValue(row, 'make'),
+      model: getImportValue(row, 'model'),
+      year: getImportValue(row, 'year'),
+      purchaseDate: getImportValue(row, 'purchaseDate'),
+      purchasePrice: getImportValue(row, 'purchasePrice'),
+      deliveryCost: getImportValue(row, 'deliveryCost'),
+      repairCost: getImportValue(row, 'repairCost'),
+      partsCost: getImportValue(row, 'partsCost'),
+      extraExpenses: getImportValue(row, 'extraExpenses'),
+      plannedSalePrice: getImportValue(row, 'plannedSalePrice'),
+      actualSalePrice: getImportValue(row, 'actualSalePrice'),
+      saleDate: getImportValue(row, 'saleDate'),
+      buyerContact: getImportValue(row, 'buyerContact'),
+      notes: getImportValue(row, 'notes'),
+      status: statusByLabel[getImportValue(row, 'status')] || getImportValue(row, 'status') || 'bought',
+      photo: getImportValue(row, 'photo'),
+    }))
+    .filter((car) => car.vin || car.make || car.model);
 }
 
 function App() {
@@ -115,6 +232,7 @@ function App() {
   const [form, setForm] = useState(emptyForm);
   const [searchVin, setSearchVin] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const importInputRef = useRef(null);
 
   const saveCars = (nextCars) => {
     setCars(nextCars);
@@ -132,15 +250,18 @@ function App() {
 
   const stats = useMemo(() => cars.reduce(
     (acc, car) => {
-      const { investment, profit } = calculateTotals(car);
-      acc.totalInvestment += investment;
-      acc.totalProfit += profit;
+      const { totalCost, netProfit, hasActualSale } = calculateTotals(car);
+      acc.totalInvestment += totalCost;
+      acc.totalProfit += netProfit;
       acc.sold += car.status === 'sold' ? 1 : 0;
       acc.active += car.status !== 'sold' ? 1 : 0;
+      acc.profitableDeals += hasActualSale ? 1 : 0;
       return acc;
     },
-    { totalInvestment: 0, totalProfit: 0, sold: 0, active: 0 },
+    { totalInvestment: 0, totalProfit: 0, sold: 0, active: 0, profitableDeals: 0 },
   ), [cars]);
+
+  const averageProfit = stats.profitableDeals > 0 ? stats.totalProfit / stats.profitableDeals : 0;
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -161,7 +282,7 @@ function App() {
     if (!form.vin.trim() || !form.make.trim() || !form.model.trim()) return;
 
     const nextCars = [
-      { ...form, id: crypto.randomUUID(), vin: form.vin.trim().toUpperCase() },
+      normalizeCar({ ...form, id: crypto.randomUUID(), vin: form.vin.trim().toUpperCase() }),
       ...cars,
     ];
     saveCars(nextCars);
@@ -170,6 +291,38 @@ function App() {
   };
 
   const removeCar = (id) => saveCars(cars.filter((car) => car.id !== id));
+
+  const exportToExcel = () => {
+    const rows = cars.map(createExcelRow).map((row) => Object.fromEntries(
+      excelColumns.map((column) => [column.header, row[column.key]]),
+    ));
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    worksheet['!cols'] = excelColumns.map((column) => ({ wch: column.key === 'notes' || column.key === 'photo' ? 34 : 18 }));
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Автомобили');
+    XLSX.writeFile(workbook, 'car-flip-manager.xlsx');
+  };
+
+  const backupToJson = () => {
+    downloadFile(
+      JSON.stringify({ exportedAt: new Date().toISOString(), cars }, null, 2),
+      'car-flip-manager-backup.json',
+      'application/json;charset=utf-8',
+    );
+  };
+
+  const handleExcelImport = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const buffer = await file.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: 'array' });
+    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+    const importedCars = parseImportedCars(rows);
+    if (importedCars.length > 0) saveCars(importedCars);
+    event.target.value = '';
+  };
 
   return h('main', { className: 'app-shell' },
     h('section', { className: 'hero' },
@@ -183,7 +336,7 @@ function App() {
     h('section', { className: 'stats-grid', 'aria-label': 'Панель статистики' },
       h(StatCard, { icon: '💵', label: 'Общие вложения', value: formatMoney(stats.totalInvestment) }),
       h(StatCard, { icon: '📈', label: 'Общая прибыль', value: formatMoney(stats.totalProfit), positive: stats.totalProfit >= 0 }),
-      h(StatCard, { icon: '🛠️', label: 'В работе', value: stats.active }),
+      h(StatCard, { icon: '⚖️', label: 'Средняя прибыль на автомобиль', value: formatMoney(averageProfit), positive: averageProfit >= 0 }),
       h(StatCard, { icon: '✅', label: 'Продано', value: stats.sold }),
     ),
     h('section', { className: 'workspace' },
@@ -199,18 +352,24 @@ function App() {
           h(Input, { label: 'Модель', name: 'model', value: form.model, onChange: handleChange, required: true }),
           h(Input, { label: 'Год', name: 'year', value: form.year, onChange: handleChange, type: 'number', min: '1900' }),
           h(Input, { label: 'Дата покупки', name: 'purchaseDate', value: form.purchaseDate, onChange: handleChange, type: 'date' }),
-          h(Input, { label: 'Цена покупки', name: 'purchasePrice', value: form.purchasePrice, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Стоимость доставки', name: 'deliveryCost', value: form.deliveryCost, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Стоимость ремонта', name: 'repairCost', value: form.repairCost, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Стоимость запчастей', name: 'partsCost', value: form.partsCost, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Доп. расходы', name: 'extraExpenses', value: form.extraExpenses, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Цена продажи', name: 'salePrice', value: form.salePrice, onChange: handleChange, type: 'number', min: '0' }),
+          h(Input, { label: 'Покупка, ₽', name: 'purchasePrice', value: form.purchasePrice, onChange: handleChange, type: 'number', min: '0' }),
+          h(Input, { label: 'Доставка, ₽', name: 'deliveryCost', value: form.deliveryCost, onChange: handleChange, type: 'number', min: '0' }),
+          h(Input, { label: 'Ремонт, ₽', name: 'repairCost', value: form.repairCost, onChange: handleChange, type: 'number', min: '0' }),
+          h(Input, { label: 'Запчасти, ₽', name: 'partsCost', value: form.partsCost, onChange: handleChange, type: 'number', min: '0' }),
+          h(Input, { label: 'Доп. расходы, ₽', name: 'extraExpenses', value: form.extraExpenses, onChange: handleChange, type: 'number', min: '0' }),
+          h(Input, { label: 'Планируемая цена продажи', name: 'plannedSalePrice', value: form.plannedSalePrice, onChange: handleChange, type: 'number', min: '0' }),
+          h(Input, { label: 'Фактическая цена продажи', name: 'actualSalePrice', value: form.actualSalePrice, onChange: handleChange, type: 'number', min: '0' }),
           h(Input, { label: 'Дата продажи', name: 'saleDate', value: form.saleDate, onChange: handleChange, type: 'date' }),
+          h(Input, { label: 'Контакт покупателя', name: 'buyerContact', value: form.buyerContact, onChange: handleChange, placeholder: 'Телефон, мессенджер или имя' }),
           h('label', null,
             h('span', null, 'Статус'),
             h('select', { name: 'status', value: form.status, onChange: handleChange },
               statusOptions.slice(1).map((status) => h('option', { value: status.value, key: status.value }, status.label)),
             ),
+          ),
+          h('label', { className: 'wide-field' },
+            h('span', null, 'Заметки по автомобилю'),
+            h('textarea', { name: 'notes', value: form.notes, onChange: handleChange, rows: 4, placeholder: 'Особенности ремонта, переговоры с покупателем, документы...' }),
           ),
         ),
         h('button', { className: 'primary-button', type: 'submit' }, 'Добавить в учет'),
@@ -219,6 +378,12 @@ function App() {
         h('div', { className: 'panel-title list-title' },
           h('div', null, h('p', { className: 'eyebrow' }, 'Сделки'), h('h2', null, 'Автомобили')),
           h('span', null, `${filteredCars.length} найдено`),
+        ),
+        h('div', { className: 'actions-row' },
+          h('button', { className: 'secondary-button', type: 'button', onClick: exportToExcel }, 'Экспорт в Excel'),
+          h('button', { className: 'secondary-button', type: 'button', onClick: () => importInputRef.current?.click() }, 'Импорт из Excel'),
+          h('button', { className: 'secondary-button', type: 'button', onClick: backupToJson }, 'Резервная копия JSON'),
+          h('input', { ref: importInputRef, className: 'hidden-input', type: 'file', accept: '.xlsx,.xls', onChange: handleExcelImport }),
         ),
         h('div', { className: 'toolbar' },
           h('label', { className: 'search-field' },
@@ -259,8 +424,13 @@ function Metric({ label, value, accent }) {
   return h('div', { className: 'metric' }, h('span', null, label), h('strong', { className: accent }, value));
 }
 
+function Detail({ label, value }) {
+  if (!value) return null;
+  return h('span', null, `${label}: ${value}`);
+}
+
 function CarCard({ car, onRemove }) {
-  const { investment, profit } = calculateTotals(car);
+  const { totalCost, netProfit, roi, hasActualSale } = calculateTotals(car);
   return h('article', { className: 'car-card' },
     h('div', { className: 'car-photo' }, car.photo ? h('img', { src: car.photo, alt: `${car.make} ${car.model}` }) : icon('🚘')),
     h('div', { className: 'car-info' },
@@ -272,18 +442,27 @@ function CarCard({ car, onRemove }) {
         h('span', { className: `status status-${car.status}` }, statusLabels[car.status]),
       ),
       h('div', { className: 'metrics' },
-        h(Metric, { label: 'Вложения', value: formatMoney(investment) }),
-        h(Metric, { label: 'Цена продажи', value: car.salePrice ? formatMoney(toNumber(car.salePrice)) : '—' }),
+        h(Metric, { label: 'Общая себестоимость', value: formatMoney(totalCost) }),
+        h(Metric, { label: 'План продажи', value: car.plannedSalePrice ? formatMoney(toNumber(car.plannedSalePrice)) : '—' }),
+        h(Metric, { label: 'Факт продажи', value: hasActualSale ? formatMoney(toNumber(car.actualSalePrice)) : '—' }),
         h(Metric, {
-          label: 'Прибыль',
-          value: car.salePrice ? formatMoney(profit) : 'Ожидается',
-          accent: profit >= 0 ? 'positive' : 'negative',
+          label: 'Чистая прибыль',
+          value: hasActualSale ? formatMoney(netProfit) : 'Ожидается',
+          accent: netProfit >= 0 ? 'positive' : 'negative',
         }),
+        h(Metric, {
+          label: 'Рентабельность',
+          value: hasActualSale ? formatPercent(roi) : '—',
+          accent: roi >= 0 ? 'positive' : 'negative',
+        }),
+        h(Metric, { label: 'Статус сделки', value: statusLabels[car.status] }),
       ),
       h('div', { className: 'dates' },
         h('span', null, `Покупка: ${car.purchaseDate || '—'}`),
         h('span', null, `Продажа: ${car.saleDate || '—'}`),
+        h(Detail, { label: 'Покупатель', value: car.buyerContact }),
       ),
+      car.notes ? h('p', { className: 'notes' }, car.notes) : null,
       h('button', { className: 'ghost-button', type: 'button', onClick: () => onRemove(car.id) }, 'Удалить'),
     ),
   );
