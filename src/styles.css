@@ -16,7 +16,7 @@ body {
     linear-gradient(135deg, #070a12 0%, #101626 100%);
 }
 
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 
 button { cursor: pointer; }
 
@@ -159,7 +159,7 @@ h1 {
   object-fit: cover;
 }
 
-.upload-button, .primary-button, .ghost-button {
+.upload-button, .primary-button, .secondary-button, .ghost-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -185,7 +185,7 @@ h1 {
 label { display: grid; gap: 8px; }
 label span { font-size: 0.82rem; font-weight: 700; }
 
-input, select {
+input, select, textarea {
   width: 100%;
   min-height: 46px;
   border: 1px solid rgba(148, 163, 184, 0.16);
@@ -196,7 +196,16 @@ input, select {
   padding: 0 14px;
 }
 
-input:focus, select:focus {
+textarea {
+  min-height: 110px;
+  padding: 12px 14px;
+  resize: vertical;
+}
+
+.wide-field { grid-column: 1 / -1; }
+
+
+input:focus, select:focus, textarea:focus {
   border-color: #38bdf8;
   box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.12);
 }
@@ -208,6 +217,21 @@ input:focus, select:focus {
   color: #fff;
   box-shadow: 0 18px 40px rgba(37, 99, 235, 0.28);
 }
+
+.actions-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.secondary-button {
+  padding: 0 14px;
+  background: rgba(30, 41, 59, 0.85);
+  color: #dbeafe;
+}
+
+.hidden-input { display: none; }
 
 .toolbar {
   display: grid;
@@ -286,6 +310,11 @@ input:focus, select:focus {
 }
 
 .metric strong { display: block; margin-top: 4px; }
+.notes {
+  margin-bottom: 12px;
+  color: #cbd5e1;
+  line-height: 1.5;
+}
 .positive { color: #5eead4; }
 .negative { color: #fb7185; }
 
@@ -320,7 +349,7 @@ input:focus, select:focus {
 
 @media (max-width: 720px) {
   .app-shell { width: min(100% - 20px, 1440px); padding-top: 20px; }
-  .stats-grid, .form-grid, .toolbar, .car-card, .metrics { grid-template-columns: 1fr; }
+  .stats-grid, .form-grid, .toolbar, .actions-row, .car-card, .metrics { grid-template-columns: 1fr; }
   .photo-upload { grid-template-columns: 1fr; }
   .hero-card { min-height: 160px; }
   .car-heading { flex-direction: column; }
