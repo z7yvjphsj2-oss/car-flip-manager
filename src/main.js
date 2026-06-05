@@ -408,7 +408,6 @@ function App() {
 
     setCars((current) => [dbToCar(data), ...current]);
     setForm(emptyForm);
-    event.currentTarget.reset();
   };
 
   const removeCar = async (id) => {
