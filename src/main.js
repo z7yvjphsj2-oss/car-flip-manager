@@ -5,6 +5,9 @@ import * as XLSX from 'https://esm.sh/xlsx@0.18.5';
 import { SUPABASE_ANON_KEY, SUPABASE_URL } from './supabase-config.js';
 
 const h = React.createElement;
+const STORAGE_KEY = 'car-flip-manager-cars';
+const MIGRATION_KEY_PREFIX = 'car-flip-manager-supabase-migrated';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const isSupabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 const supabase = isSupabaseConfigured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
@@ -70,7 +73,7 @@ function normalizeCar(car) {
   return {
     ...emptyForm,
     ...car,
-    id: car.id || crypto.randomUUID(),
+    id: UUID_PATTERN.test(String(car.id || '')) ? car.id : crypto.randomUUID(),
     vin: String(car.vin || '').trim().toUpperCase(),
     year: car.year ?? '',
     purchaseDate: car.purchaseDate ?? '',
@@ -239,6 +242,50 @@ function parseImportedCars(rows) {
     .filter((car) => car.vin || car.make || car.model);
 }
 
+function readLegacyCars() {
+  if (typeof localStorage === 'undefined') return [];
+
+  try {
+    const savedCars = localStorage.getItem(STORAGE_KEY);
+    if (!savedCars) return [];
+    const parsedCars = JSON.parse(savedCars);
+    if (!Array.isArray(parsedCars)) return [];
+    return parsedCars
+      .map((car) => normalizeCar(car))
+      .filter((car) => car.vin || car.make || car.model);
+  } catch (error) {
+    console.warn('Не удалось прочитать автомобили из localStorage:', error);
+    return [];
+  }
+}
+
+function getMigrationKey(userId) {
+  return `${MIGRATION_KEY_PREFIX}:${userId}`;
+}
+
+async function migrateLegacyCars(userId) {
+  if (!supabase || typeof localStorage === 'undefined') return { migrated: false, count: 0 };
+
+  const migrationKey = getMigrationKey(userId);
+  if (localStorage.getItem(migrationKey)) return { migrated: false, count: 0 };
+
+  const legacyCars = readLegacyCars();
+  if (legacyCars.length === 0) {
+    localStorage.setItem(migrationKey, new Date().toISOString());
+    return { migrated: false, count: 0 };
+  }
+
+  const { error } = await supabase
+    .from('cars')
+    .upsert(legacyCars.map((car) => carToDb(car, userId)), { onConflict: 'id' });
+
+  if (error) throw error;
+
+  localStorage.setItem(migrationKey, new Date().toISOString());
+  localStorage.setItem(`${migrationKey}:count`, String(legacyCars.length));
+  return { migrated: true, count: legacyCars.length };
+}
+
 function App() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -279,14 +326,25 @@ function App() {
     if (!supabase || !session?.user) return;
     setCarsLoading(true);
     setMessage('');
-    const { data, error } = await supabase
-      .from('cars')
-      .select('*')
-      .order('created_at', { ascending: false });
 
-    if (error) setMessage(error.message);
-    else setCars(data.map(dbToCar));
-    setCarsLoading(false);
+    try {
+      const migration = await migrateLegacyCars(session.user.id);
+      const { data, error } = await supabase
+        .from('cars')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      setCars(data.map(dbToCar));
+      if (migration.migrated) {
+        setMessage(`Перенесено из localStorage в Supabase: ${migration.count} авто.`);
+      }
+    } catch (error) {
+      setMessage(error.message || 'Не удалось загрузить автомобили из Supabase.');
+    } finally {
+      setCarsLoading(false);
+    }
   };
 
   useEffect(() => {
@@ -562,7 +620,7 @@ function ConfigNotice() {
   return h('main', { className: 'app-shell auth-shell' },
     h('section', { className: 'panel auth-panel' },
       h('div', { className: 'panel-title' }, icon('⚙️'), h('h2', null, 'Подключите Supabase')),
-      h('p', { className: 'notes' }, 'Заполните SUPABASE_URL и SUPABASE_ANON_KEY в src/supabase-config.js, затем выполните SQL из supabase-schema.sql.'),
+      h('p', { className: 'notes' }, 'Заполните SUPABASE_PUBLISHABLE_KEY в src/supabase-config.js, затем выполните SQL из supabase-schema.sql.'),
     ),
   );
 }
