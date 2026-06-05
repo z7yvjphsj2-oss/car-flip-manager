@@ -1,9 +1,12 @@
-import React, { useMemo, useRef, useState } from 'https://esm.sh/react@19.1.0';
+import React, { useEffect, useMemo, useRef, useState } from 'https://esm.sh/react@19.1.0';
 import { createRoot } from 'https://esm.sh/react-dom@19.1.0/client';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import * as XLSX from 'https://esm.sh/xlsx@0.18.5';
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from './supabase-config.js';
 
 const h = React.createElement;
-const STORAGE_KEY = 'car-flip-manager-cars';
+const isSupabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+const supabase = isSupabaseConfigured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
 const statusLabels = {
   bought: 'Куплен',
@@ -43,49 +46,6 @@ const excelColumns = [
   { key: 'photo', header: 'Фото (Data URL)' },
 ];
 
-const initialCars = [
-  {
-    id: 'demo-honda-accord',
-    vin: '1HGCM82633A004352',
-    make: 'Honda',
-    model: 'Accord',
-    year: '2019',
-    purchaseDate: '2026-01-18',
-    purchasePrice: '740000',
-    deliveryCost: '68000',
-    repairCost: '117000',
-    partsCost: '47000',
-    extraExpenses: '16000',
-    plannedSalePrice: '1120000',
-    actualSalePrice: '1115000',
-    saleDate: '2026-03-02',
-    buyerContact: '+7 999 123-45-67, Иван',
-    notes: 'После ремонта подвески и полировки кузова продан постоянному клиенту.',
-    status: 'sold',
-    photo: '',
-  },
-  {
-    id: 'demo-bmw-328i',
-    vin: 'WBA3A5C50DF356789',
-    make: 'BMW',
-    model: '328i',
-    year: '2020',
-    purchaseDate: '2026-04-09',
-    purchasePrice: '1050000',
-    deliveryCost: '81000',
-    repairCost: '189000',
-    partsCost: '70000',
-    extraExpenses: '23000',
-    plannedSalePrice: '1550000',
-    actualSalePrice: '',
-    saleDate: '',
-    buyerContact: '',
-    notes: 'В работе: заказаны передний бампер и комплект фар.',
-    status: 'repair',
-    photo: '',
-  },
-];
-
 const emptyForm = {
   vin: '',
   make: '',
@@ -112,21 +72,73 @@ function normalizeCar(car) {
     ...car,
     id: car.id || crypto.randomUUID(),
     vin: String(car.vin || '').trim().toUpperCase(),
+    year: car.year ?? '',
+    purchaseDate: car.purchaseDate ?? '',
+    purchasePrice: car.purchasePrice ?? '',
+    deliveryCost: car.deliveryCost ?? '',
+    repairCost: car.repairCost ?? '',
+    partsCost: car.partsCost ?? '',
+    extraExpenses: car.extraExpenses ?? '',
     plannedSalePrice: car.plannedSalePrice ?? '',
     actualSalePrice: car.actualSalePrice ?? car.salePrice ?? '',
+    saleDate: car.saleDate ?? '',
     buyerContact: car.buyerContact ?? '',
     notes: car.notes ?? '',
     status: statusLabels[car.status] ? car.status : 'bought',
+    photo: car.photo ?? '',
   };
 }
 
-function loadCars() {
-  try {
-    const savedCars = localStorage.getItem(STORAGE_KEY);
-    return savedCars ? JSON.parse(savedCars).map(normalizeCar) : initialCars;
-  } catch {
-    return initialCars;
-  }
+function dbToCar(row) {
+  return normalizeCar({
+    id: row.id,
+    vin: row.vin,
+    make: row.make,
+    model: row.model,
+    year: row.year,
+    purchaseDate: row.purchase_date || '',
+    purchasePrice: row.purchase_price ?? '',
+    deliveryCost: row.delivery_cost ?? '',
+    repairCost: row.repair_cost ?? '',
+    partsCost: row.parts_cost ?? '',
+    extraExpenses: row.extra_expenses ?? '',
+    plannedSalePrice: row.planned_sale_price ?? '',
+    actualSalePrice: row.actual_sale_price ?? '',
+    saleDate: row.sale_date || '',
+    buyerContact: row.buyer_contact,
+    notes: row.notes,
+    status: row.status,
+    photo: row.photo,
+  });
+}
+
+function emptyToNull(value) {
+  return value === '' || value === undefined || value === null ? null : value;
+}
+
+function carToDb(car, userId) {
+  const normalized = normalizeCar(car);
+  return {
+    id: normalized.id,
+    user_id: userId,
+    vin: normalized.vin,
+    make: normalized.make.trim(),
+    model: normalized.model.trim(),
+    year: String(normalized.year || ''),
+    purchase_date: emptyToNull(normalized.purchaseDate),
+    purchase_price: toNumber(normalized.purchasePrice),
+    delivery_cost: toNumber(normalized.deliveryCost),
+    repair_cost: toNumber(normalized.repairCost),
+    parts_cost: toNumber(normalized.partsCost),
+    extra_expenses: toNumber(normalized.extraExpenses),
+    planned_sale_price: toNumber(normalized.plannedSalePrice),
+    actual_sale_price: toNumber(normalized.actualSalePrice),
+    sale_date: emptyToNull(normalized.saleDate),
+    buyer_contact: normalized.buyerContact,
+    notes: normalized.notes,
+    status: normalized.status,
+    photo: normalized.photo,
+  };
 }
 
 function toNumber(value) {
@@ -228,16 +240,58 @@ function parseImportedCars(rows) {
 }
 
 function App() {
-  const [cars, setCars] = useState(loadCars);
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [cars, setCars] = useState([]);
+  const [carsLoading, setCarsLoading] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [searchVin, setSearchVin] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [message, setMessage] = useState('');
   const importInputRef = useRef(null);
 
-  const saveCars = (nextCars) => {
-    setCars(nextCars);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(nextCars));
+  useEffect(() => {
+    if (!supabase) {
+      setAuthLoading(false);
+      return undefined;
+    }
+
+    let mounted = true;
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!mounted) return;
+      if (error) setMessage(error.message);
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (!nextSession) setCars([]);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  const loadCars = async () => {
+    if (!supabase || !session?.user) return;
+    setCarsLoading(true);
+    setMessage('');
+    const { data, error } = await supabase
+      .from('cars')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) setMessage(error.message);
+    else setCars(data.map(dbToCar));
+    setCarsLoading(false);
   };
+
+  useEffect(() => {
+    if (session?.user) loadCars();
+  }, [session?.user?.id]);
 
   const filteredCars = useMemo(() => {
     const vinQuery = searchVin.trim().toLowerCase();
@@ -277,20 +331,34 @@ function App() {
     reader.readAsDataURL(file);
   };
 
-  const handleSubmit = (event) => {
+  const handleSubmit = async (event) => {
     event.preventDefault();
-    if (!form.vin.trim() || !form.make.trim() || !form.model.trim()) return;
+    if (!form.vin.trim() || !form.make.trim() || !form.model.trim() || !session?.user) return;
 
-    const nextCars = [
-      normalizeCar({ ...form, id: crypto.randomUUID(), vin: form.vin.trim().toUpperCase() }),
-      ...cars,
-    ];
-    saveCars(nextCars);
+    const newCar = normalizeCar({ ...form, id: crypto.randomUUID(), vin: form.vin.trim().toUpperCase() });
+    setMessage('');
+    const { data, error } = await supabase
+      .from('cars')
+      .insert(carToDb(newCar, session.user.id))
+      .select('*')
+      .single();
+
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+
+    setCars((current) => [dbToCar(data), ...current]);
     setForm(emptyForm);
     event.currentTarget.reset();
   };
 
-  const removeCar = (id) => saveCars(cars.filter((car) => car.id !== id));
+  const removeCar = async (id) => {
+    setMessage('');
+    const { error } = await supabase.from('cars').delete().eq('id', id);
+    if (error) setMessage(error.message);
+    else setCars((current) => current.filter((car) => car.id !== id));
+  };
 
   const exportToExcel = () => {
     const rows = cars.map(createExcelRow).map((row) => Object.fromEntries(
@@ -305,7 +373,7 @@ function App() {
 
   const backupToJson = () => {
     downloadFile(
-      JSON.stringify({ exportedAt: new Date().toISOString(), cars }, null, 2),
+      JSON.stringify({ exportedAt: new Date().toISOString(), user: session?.user?.email, cars }, null, 2),
       'car-flip-manager-backup.json',
       'application/json;charset=utf-8',
     );
@@ -313,16 +381,48 @@ function App() {
 
   const handleExcelImport = async (event) => {
     const file = event.target.files?.[0];
-    if (!file) return;
+    if (!file || !session?.user) return;
 
     const buffer = await file.arrayBuffer();
     const workbook = XLSX.read(buffer, { type: 'array' });
     const worksheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
     const importedCars = parseImportedCars(rows);
-    if (importedCars.length > 0) saveCars(importedCars);
+    if (importedCars.length > 0) {
+      setCarsLoading(true);
+      setMessage('');
+      const { error: deleteError } = await supabase.from('cars').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+      const { data, error: insertError } = deleteError
+        ? { data: null, error: deleteError }
+        : await supabase
+          .from('cars')
+          .insert(importedCars.map((car) => carToDb(car, session.user.id)))
+          .select('*')
+          .order('created_at', { ascending: false });
+
+      if (insertError) setMessage(insertError.message);
+      else setCars(data.map(dbToCar));
+      setCarsLoading(false);
+    }
     event.target.value = '';
   };
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
+    setMessage('');
+  };
+
+  if (!isSupabaseConfigured) {
+    return h(ConfigNotice);
+  }
+
+  if (authLoading) {
+    return h('main', { className: 'app-shell' }, h('p', { className: 'empty-state' }, 'Проверяем сессию Supabase...'));
+  }
+
+  if (!session?.user) {
+    return h(AuthScreen, { onMessage: setMessage, message });
+  }
 
   return h('main', { className: 'app-shell' },
     h('section', { className: 'hero' },
@@ -330,9 +430,11 @@ function App() {
         h('p', { className: 'eyebrow' }, 'Car Flip Manager'),
         h('h1', null, 'Учет автомобилей в перепродаже'),
         h('p', { className: 'hero-text' }, 'Контролируйте закупки, ремонт, вложения и прибыль по каждой сделке в одном темном интерфейсе.'),
+        h('div', { className: 'session-row' }, h('span', null, session.user.email), h('button', { className: 'secondary-button', type: 'button', onClick: signOut }, 'Выйти')),
       ),
       h('div', { className: 'hero-card' }, icon('🚘'), h('span', null, 'Всего авто'), h('strong', null, cars.length)),
     ),
+    message ? h('p', { className: 'app-message' }, message) : null,
     h('section', { className: 'stats-grid', 'aria-label': 'Панель статистики' },
       h(StatCard, { icon: '💵', label: 'Общие вложения', value: formatMoney(stats.totalInvestment) }),
       h(StatCard, { icon: '📈', label: 'Общая прибыль', value: formatMoney(stats.totalProfit), positive: stats.totalProfit >= 0 }),
@@ -377,7 +479,7 @@ function App() {
       h('section', { className: 'panel list-panel' },
         h('div', { className: 'panel-title list-title' },
           h('div', null, h('p', { className: 'eyebrow' }, 'Сделки'), h('h2', null, 'Автомобили')),
-          h('span', null, `${filteredCars.length} найдено`),
+          h('span', null, carsLoading ? 'Загрузка...' : `${filteredCars.length} найдено`),
         ),
         h('div', { className: 'actions-row' },
           h('button', { className: 'secondary-button', type: 'button', onClick: exportToExcel }, 'Экспорт в Excel'),
@@ -401,9 +503,66 @@ function App() {
         ),
         h('div', { className: 'car-list' },
           filteredCars.map((car) => h(CarCard, { car, key: car.id, onRemove: removeCar })),
-          filteredCars.length === 0 ? h('p', { className: 'empty-state' }, 'Автомобили не найдены. Измените поиск или фильтр.') : null,
+          filteredCars.length === 0 ? h('p', { className: 'empty-state' }, carsLoading ? 'Загружаем автомобили из Supabase...' : 'Автомобили не найдены. Измените поиск или фильтр.') : null,
         ),
       ),
+    ),
+  );
+}
+
+function AuthScreen({ message, onMessage }) {
+  const [mode, setMode] = useState('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const submitAuth = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+    onMessage('');
+
+    const authRequest = mode === 'signup'
+      ? supabase.auth.signUp({ email, password })
+      : supabase.auth.signInWithPassword({ email, password });
+    const { data, error } = await authRequest;
+
+    if (error) onMessage(error.message);
+    else if (mode === 'signup' && !data.session) onMessage('Регистрация создана. Проверьте email и подтвердите адрес перед входом.');
+    setLoading(false);
+  };
+
+  return h('main', { className: 'app-shell auth-shell' },
+    h('section', { className: 'hero' },
+      h('div', null,
+        h('p', { className: 'eyebrow' }, 'Car Flip Manager'),
+        h('h1', null, 'Учет автомобилей в перепродаже'),
+        h('p', { className: 'hero-text' }, 'Войдите по email, чтобы хранить автомобили в Supabase и видеть только свои сделки.'),
+      ),
+      h('div', { className: 'hero-card' }, icon('🔐'), h('span', null, 'Доступ'), h('strong', null, '@')),
+    ),
+    h('form', { className: 'panel auth-panel', onSubmit: submitAuth },
+      h('div', { className: 'panel-title' }, icon(mode === 'signup' ? '📝' : '🔑'), h('h2', null, mode === 'signup' ? 'Регистрация' : 'Вход')),
+      message ? h('p', { className: 'app-message' }, message) : null,
+      h(Input, { label: 'Email', type: 'email', value: email, onChange: (event) => setEmail(event.target.value), required: true, placeholder: 'you@example.com' }),
+      h(Input, { label: 'Пароль', type: 'password', value: password, onChange: (event) => setPassword(event.target.value), required: true, minLength: 6, placeholder: 'Минимум 6 символов' }),
+      h('button', { className: 'primary-button', type: 'submit', disabled: loading }, loading ? 'Отправляем...' : mode === 'signup' ? 'Зарегистрироваться' : 'Войти'),
+      h('button', {
+        className: 'auth-switch',
+        type: 'button',
+        onClick: () => {
+          onMessage('');
+          setMode(mode === 'signup' ? 'signin' : 'signup');
+        },
+      }, mode === 'signup' ? 'Уже есть аккаунт? Войти' : 'Нет аккаунта? Зарегистрироваться'),
+    ),
+  );
+}
+
+function ConfigNotice() {
+  return h('main', { className: 'app-shell auth-shell' },
+    h('section', { className: 'panel auth-panel' },
+      h('div', { className: 'panel-title' }, icon('⚙️'), h('h2', null, 'Подключите Supabase')),
+      h('p', { className: 'notes' }, 'Заполните SUPABASE_URL и SUPABASE_ANON_KEY в src/supabase-config.js, затем выполните SQL из supabase-schema.sql.'),
     ),
   );
 }
