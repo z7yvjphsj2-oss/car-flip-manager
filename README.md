@@ -23,37 +23,51 @@ npm run preview
 
 ## Подключение Supabase
 
-1. Создайте проект в [Supabase](https://supabase.com/).
-2. В Supabase Dashboard откройте **Project Settings → Data API**.
-3. Скопируйте **Project URL** и публичный **anon/public key**.
-4. Откройте файл `src/supabase-config.js` и заполните значения:
+Проект уже указывает на Supabase URL `https://juhesiosvievacpiijjz.supabase.co`; для запуска нужно добавить publishable key и выполнить SQL-схему.
+
+### 1. Какой SQL выполнить в SQL Editor
+
+1. В Supabase Dashboard откройте **SQL Editor → New query**.
+2. Скопируйте весь SQL из файла `supabase-schema.sql`.
+3. Нажмите **Run**. Скрипт создаст таблицы `cars`, `expenses`, `notes`, `sales`, индексы, триггеры `updated_at` и RLS-политики для данных текущего пользователя.
+
+### 2. Где вставить publishable key
+
+1. В Supabase Dashboard откройте **Project Settings → API → Project API keys**.
+2. Скопируйте **Publishable key**.
+3. Вставьте его в `src/supabase-config.js`:
 
 ```js
-export const SUPABASE_URL = 'https://your-project.supabase.co';
-export const SUPABASE_ANON_KEY = 'your-anon-or-publishable-key';
+export const SUPABASE_URL = 'https://juhesiosvievacpiijjz.supabase.co';
+export const SUPABASE_PUBLISHABLE_KEY = 'your-publishable-key';
 ```
 
-5. В Supabase Dashboard откройте **SQL Editor → New query**.
-6. Скопируйте весь SQL из файла `supabase-schema.sql` и выполните его.
-7. В разделе **Authentication → Sign In / Providers → Email** убедитесь, что email/password вход включен.
-8. Если включено подтверждение email, добавьте адрес локальной разработки в **Authentication → URL Configuration → Site URL**:
+`SUPABASE_ANON_KEY` оставлен как совместимый алиас и автоматически получает то же значение.
+
+### 3. Как проверить подключение
+
+1. В разделе **Authentication → Sign In / Providers → Email** убедитесь, что email/password вход включен.
+2. Если включено подтверждение email, добавьте адрес локальной разработки в **Authentication → URL Configuration → Site URL**:
 
 ```text
 http://localhost:5173
 ```
 
-9. Запустите приложение командой `npm run dev`, зарегистрируйтесь по email и войдите.
-10. Для публикации на GitHub Pages также добавьте production-адрес Pages в Supabase Auth URL Configuration, чтобы подтверждение email и редиректы работали корректно.
+3. Запустите приложение командой `npm run dev` и откройте `http://localhost:5173`.
+4. Зарегистрируйтесь или войдите по email/password.
+5. Создайте тестовый автомобиль и проверьте, что строка появилась в **Table Editor → cars**.
+6. Если в браузере уже были данные старой версии в `localStorage` под ключом `car-flip-manager-cars`, после первого входа приложение автоматически перенесет их в таблицу `cars` и покажет сообщение о количестве перенесенных авто.
+7. Для публикации на GitHub Pages также добавьте production-адрес Pages в Supabase Auth URL Configuration, чтобы подтверждение email и редиректы работали корректно.
 
-## Структура таблицы Supabase
+## Структура таблиц Supabase
 
-SQL-схема находится в `supabase-schema.sql` и создает таблицу `public.cars` со следующими группами полей:
+SQL-схема находится в `supabase-schema.sql` и создает четыре таблицы:
 
-- `id`, `user_id`, `created_at`, `updated_at` — идентификаторы и аудит;
-- `vin`, `make`, `model`, `year`, `status`, `photo`, `notes` — описание автомобиля;
-- `purchase_date`, `purchase_price`, `delivery_cost`, `repair_cost`, `parts_cost`, `extra_expenses` — покупка и вложения;
-- `planned_sale_price`, `actual_sale_price`, `sale_date`, `buyer_contact` — продажа;
-- RLS-политики `select`, `insert`, `update`, `delete` разрешают пользователю работать только со строками, где `user_id = auth.uid()`.
+- `public.cars` — основной список автомобилей и поля, которые нужны текущему интерфейсу: VIN, марка, модель, статус, фото, покупка, вложения, продажа и заметка;
+- `public.expenses` — нормализованные расходы по автомобилю (`purchase`, `delivery`, `repair`, `parts`, `other`) для будущего расширения детализации вложений;
+- `public.notes` — отдельные заметки по автомобилю для будущей истории комментариев;
+- `public.sales` — отдельная запись продажи по автомобилю для будущего расширения блока продаж;
+- во всех таблицах есть `user_id`, `created_at`, `updated_at`; RLS-политики `select`, `insert`, `update`, `delete` разрешают пользователю работать только со своими строками.
 
 ## Экспорт и резервное копирование
 
