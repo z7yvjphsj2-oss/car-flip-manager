@@ -171,6 +171,11 @@ function formatPercent(value) {
   return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value)}%`;
 }
 
+function getErrorMessage(error, fallback) {
+  console.error(fallback, error);
+  return fallback;
+}
+
 function icon(symbol) {
   return h('span', { className: 'icon', 'aria-hidden': 'true' }, symbol);
 }
@@ -291,6 +296,9 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [cars, setCars] = useState([]);
   const [carsLoading, setCarsLoading] = useState(false);
+  const [savingCar, setSavingCar] = useState(false);
+  const [deletingCarId, setDeletingCarId] = useState(null);
+  const [importingCars, setImportingCars] = useState(false);
   const [form, setForm] = useState(emptyForm);
   const [searchVin, setSearchVin] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
@@ -304,12 +312,20 @@ function App() {
     }
 
     let mounted = true;
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (!mounted) return;
-      if (error) setMessage(error.message);
-      setSession(data.session);
-      setAuthLoading(false);
-    });
+    supabase.auth.getSession()
+      .then(({ data, error }) => {
+        if (!mounted) return;
+        if (error) {
+          setMessage(getErrorMessage(error, 'Не удалось проверить сессию. Попробуйте обновить страницу.'));
+        }
+        setSession(data?.session ?? null);
+      })
+      .catch((error) => {
+        if (mounted) setMessage(getErrorMessage(error, 'Не удалось подключиться к сервису авторизации.'));
+      })
+      .finally(() => {
+        if (mounted) setAuthLoading(false);
+      });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
       setSession(nextSession);
@@ -336,12 +352,12 @@ function App() {
 
       if (error) throw error;
 
-      setCars(data.map(dbToCar));
+      setCars((data ?? []).map(dbToCar));
       if (migration.migrated) {
         setMessage(`Перенесено из localStorage в Supabase: ${migration.count} авто.`);
       }
     } catch (error) {
-      setMessage(error.message || 'Не удалось загрузить автомобили из Supabase.');
+      setMessage(getErrorMessage(error, 'Не удалось загрузить автомобили из Supabase.'));
     } finally {
       setCarsLoading(false);
     }
@@ -393,28 +409,43 @@ function App() {
     event.preventDefault();
     if (!form.vin.trim() || !form.make.trim() || !form.model.trim() || !session?.user) return;
 
+    if (savingCar) return;
+
     const newCar = normalizeCar({ ...form, id: crypto.randomUUID(), vin: form.vin.trim().toUpperCase() });
+    setSavingCar(true);
     setMessage('');
-    const { data, error } = await supabase
-      .from('cars')
-      .insert(carToDb(newCar, session.user.id))
-      .select('*')
-      .single();
 
-    if (error) {
-      setMessage(error.message);
-      return;
+    try {
+      const { data, error } = await supabase
+        .from('cars')
+        .insert(carToDb(newCar, session.user.id))
+        .select('*')
+        .single();
+
+      if (error) throw error;
+      setCars((current) => [dbToCar(data), ...current]);
+      setForm(emptyForm);
+    } catch (error) {
+      setMessage(getErrorMessage(error, 'Не удалось сохранить автомобиль. Проверьте данные и повторите попытку.'));
+    } finally {
+      setSavingCar(false);
     }
-
-    setCars((current) => [dbToCar(data), ...current]);
-    setForm(emptyForm);
   };
 
   const removeCar = async (id) => {
+    if (deletingCarId || !window.confirm('Удалить автомобиль и связанные с ним данные? Это действие нельзя отменить.')) return;
+
+    setDeletingCarId(id);
     setMessage('');
-    const { error } = await supabase.from('cars').delete().eq('id', id);
-    if (error) setMessage(error.message);
-    else setCars((current) => current.filter((car) => car.id !== id));
+    try {
+      const { error } = await supabase.from('cars').delete().eq('id', id);
+      if (error) throw error;
+      setCars((current) => current.filter((car) => car.id !== id));
+    } catch (error) {
+      setMessage(getErrorMessage(error, 'Не удалось удалить автомобиль. Повторите попытку.'));
+    } finally {
+      setDeletingCarId(null);
+    }
   };
 
   const exportToExcel = () => {
@@ -437,36 +468,63 @@ function App() {
   };
 
   const handleExcelImport = async (event) => {
-    const file = event.target.files?.[0];
-    if (!file || !session?.user) return;
-
-    const buffer = await file.arrayBuffer();
-    const workbook = XLSX.read(buffer, { type: 'array' });
-    const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
-    const importedCars = parseImportedCars(rows);
-    if (importedCars.length > 0) {
-      setCarsLoading(true);
-      setMessage('');
-      const { error: deleteError } = await supabase.from('cars').delete().neq('id', '00000000-0000-0000-0000-000000000000');
-      const { data, error: insertError } = deleteError
-        ? { data: null, error: deleteError }
-        : await supabase
-          .from('cars')
-          .insert(importedCars.map((car) => carToDb(car, session.user.id)))
-          .select('*')
-          .order('created_at', { ascending: false });
-
-      if (insertError) setMessage(insertError.message);
-      else setCars(data.map(dbToCar));
-      setCarsLoading(false);
+    const input = event.currentTarget;
+    const file = input.files?.[0];
+    if (!file || !session?.user || importingCars) return;
+    if (!window.confirm('Импорт заменит текущий список автомобилей. Продолжить?')) {
+      input.value = '';
+      return;
     }
-    event.target.value = '';
+
+    setImportingCars(true);
+    setMessage('');
+    try {
+      const buffer = await file.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      if (!worksheet) throw new Error('В книге Excel не найден лист с данными.');
+
+      const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+      const importedCars = parseImportedCars(rows).map((car) => ({ ...car, id: crypto.randomUUID() }));
+      if (importedCars.length === 0) throw new Error('В файле не найдено автомобилей для импорта.');
+
+      // Insert the replacement set first. Existing data is deleted only after the insert succeeds.
+      const { data, error: insertError } = await supabase
+        .from('cars')
+        .insert(importedCars.map((car) => carToDb(car, session.user.id)))
+        .select('*')
+        .order('created_at', { ascending: false });
+      if (insertError) throw insertError;
+
+      const previousIds = cars.map((car) => car.id);
+      if (previousIds.length > 0) {
+        const { error: deleteError } = await supabase.from('cars').delete().in('id', previousIds);
+        if (deleteError) {
+          setCars([...(data ?? []).map(dbToCar), ...cars]);
+          throw new Error('Новые данные импортированы, но прежние записи не удалены. Удалите дубликаты вручную.', { cause: deleteError });
+        }
+      }
+
+      setCars((data ?? []).map(dbToCar));
+      setMessage(`Импортировано автомобилей: ${importedCars.length}.`);
+    } catch (error) {
+      setMessage(getErrorMessage(error, error?.message?.startsWith('Новые данные импортированы')
+        ? error.message
+        : 'Не удалось импортировать Excel. Прежние данные сохранены.'));
+    } finally {
+      setImportingCars(false);
+      input.value = '';
+    }
   };
 
   const signOut = async () => {
-    await supabase.auth.signOut();
     setMessage('');
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+    } catch (error) {
+      setMessage(getErrorMessage(error, 'Не удалось выйти из аккаунта. Повторите попытку.'));
+    }
   };
 
   if (!isSupabaseConfigured) {
@@ -531,7 +589,7 @@ function App() {
             h('textarea', { name: 'notes', value: form.notes, onChange: handleChange, rows: 4, placeholder: 'Особенности ремонта, переговоры с покупателем, документы...' }),
           ),
         ),
-        h('button', { className: 'primary-button', type: 'submit' }, 'Добавить в учет'),
+        h('button', { className: 'primary-button', type: 'submit', disabled: savingCar }, savingCar ? 'Сохраняем...' : 'Добавить в учет'),
       ),
       h('section', { className: 'panel list-panel' },
         h('div', { className: 'panel-title list-title' },
@@ -540,7 +598,7 @@ function App() {
         ),
         h('div', { className: 'actions-row' },
           h('button', { className: 'secondary-button', type: 'button', onClick: exportToExcel }, 'Экспорт в Excel'),
-          h('button', { className: 'secondary-button', type: 'button', onClick: () => importInputRef.current?.click() }, 'Импорт из Excel'),
+          h('button', { className: 'secondary-button', type: 'button', disabled: importingCars, onClick: () => importInputRef.current?.click() }, importingCars ? 'Импортируем...' : 'Импорт из Excel'),
           h('button', { className: 'secondary-button', type: 'button', onClick: backupToJson }, 'Резервная копия JSON'),
           h('input', { ref: importInputRef, className: 'hidden-input', type: 'file', accept: '.xlsx,.xls', onChange: handleExcelImport }),
         ),
@@ -559,7 +617,7 @@ function App() {
           ),
         ),
         h('div', { className: 'car-list' },
-          filteredCars.map((car) => h(CarCard, { car, key: car.id, onRemove: removeCar })),
+          filteredCars.map((car) => h(CarCard, { car, key: car.id, onRemove: removeCar, deleting: deletingCarId === car.id })),
           filteredCars.length === 0 ? h('p', { className: 'empty-state' }, carsLoading ? 'Загружаем автомобили из Supabase...' : 'Автомобили не найдены. Измените поиск или фильтр.') : null,
         ),
       ),
@@ -578,14 +636,21 @@ function AuthScreen({ message, onMessage }) {
     setLoading(true);
     onMessage('');
 
-    const authRequest = mode === 'signup'
-      ? supabase.auth.signUp({ email, password })
-      : supabase.auth.signInWithPassword({ email, password });
-    const { data, error } = await authRequest;
+    try {
+      const authRequest = mode === 'signup'
+        ? supabase.auth.signUp({ email, password })
+        : supabase.auth.signInWithPassword({ email, password });
+      const { data, error } = await authRequest;
 
-    if (error) onMessage(error.message);
-    else if (mode === 'signup' && !data.session) onMessage('Регистрация создана. Проверьте email и подтвердите адрес перед входом.');
-    setLoading(false);
+      if (error) throw error;
+      if (mode === 'signup' && !data?.session) onMessage('Регистрация создана. Проверьте email и подтвердите адрес перед входом.');
+    } catch (error) {
+      onMessage(getErrorMessage(error, mode === 'signup'
+        ? 'Не удалось зарегистрироваться. Проверьте данные и повторите попытку.'
+        : 'Не удалось войти. Проверьте email и пароль.'));
+    } finally {
+      setLoading(false);
+    }
   };
 
   return h('main', { className: 'app-shell auth-shell' },
@@ -645,7 +710,7 @@ function Detail({ label, value }) {
   return h('span', null, `${label}: ${value}`);
 }
 
-function CarCard({ car, onRemove }) {
+function CarCard({ car, onRemove, deleting }) {
   const { totalCost, netProfit, roi, hasActualSale } = calculateTotals(car);
   return h('article', { className: 'car-card' },
     h('div', { className: 'car-photo' }, car.photo ? h('img', { src: car.photo, alt: `${car.make} ${car.model}` }) : icon('🚘')),
@@ -679,7 +744,7 @@ function CarCard({ car, onRemove }) {
         h(Detail, { label: 'Покупатель', value: car.buyerContact }),
       ),
       car.notes ? h('p', { className: 'notes' }, car.notes) : null,
-      h('button', { className: 'ghost-button', type: 'button', onClick: () => onRemove(car.id) }, 'Удалить'),
+      h('button', { className: 'ghost-button', type: 'button', disabled: deleting, onClick: () => onRemove(car.id) }, deleting ? 'Удаляем...' : 'Удалить'),
     ),
   );
 }
