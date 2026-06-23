@@ -18,6 +18,30 @@ const statusLabels = {
   sold: 'Продан',
 };
 
+
+const carCatalog = [
+  { make: 'Audi', models: ['A3', 'A4', 'A6', 'Q3', 'Q5', 'Q7'] },
+  { make: 'BMW', models: ['3 Series', '5 Series', 'X1', 'X3', 'X5', 'X6'] },
+  { make: 'Chevrolet', models: ['Aveo', 'Captiva', 'Cruze', 'Malibu', 'Niva', 'Tahoe'] },
+  { make: 'Ford', models: ['Explorer', 'Fiesta', 'Focus', 'Kuga', 'Mondeo', 'Mustang'] },
+  { make: 'Honda', models: ['Accord', 'Civic', 'CR-V', 'Fit', 'Pilot'] },
+  { make: 'Hyundai', models: ['Creta', 'Elantra', 'Palisade', 'Santa Fe', 'Solaris', 'Tucson'] },
+  { make: 'Kia', models: ['Ceed', 'Cerato', 'K5', 'Rio', 'Sorento', 'Sportage'] },
+  { make: 'Lada', models: ['Granta', 'Largus', 'Niva', 'Vesta', 'XRAY'] },
+  { make: 'Lexus', models: ['ES', 'GX', 'IS', 'NX', 'RX', 'UX'] },
+  { make: 'Mazda', models: ['3', '6', 'CX-3', 'CX-5', 'CX-9'] },
+  { make: 'Mercedes-Benz', models: ['A-Class', 'C-Class', 'E-Class', 'GLA', 'GLC', 'GLE'] },
+  { make: 'Mitsubishi', models: ['ASX', 'L200', 'Outlander', 'Pajero', 'Pajero Sport'] },
+  { make: 'Nissan', models: ['Almera', 'Juke', 'Murano', 'Qashqai', 'Teana', 'X-Trail'] },
+  { make: 'Renault', models: ['Arkana', 'Duster', 'Kaptur', 'Logan', 'Sandero'] },
+  { make: 'Skoda', models: ['Fabia', 'Karoq', 'Kodiaq', 'Octavia', 'Rapid', 'Superb'] },
+  { make: 'Toyota', models: ['Camry', 'Corolla', 'Land Cruiser', 'Prado', 'RAV4', 'Venza'] },
+  { make: 'Volkswagen', models: ['Golf', 'Jetta', 'Passat', 'Polo', 'Tiguan', 'Touareg'] },
+  { make: 'Volvo', models: ['S60', 'S90', 'V60', 'XC40', 'XC60', 'XC90'] },
+];
+
+const makeOptions = carCatalog.map((item) => item.make);
+
 const statusOptions = [
   { value: 'all', label: 'Все статусы' },
   { value: 'bought', label: statusLabels.bought },
@@ -297,6 +321,8 @@ function App() {
   const [cars, setCars] = useState([]);
   const [carsLoading, setCarsLoading] = useState(false);
   const [savingCar, setSavingCar] = useState(false);
+  const [editingCarId, setEditingCarId] = useState(null);
+  const [signingOut, setSigningOut] = useState(false);
   const [deletingCarId, setDeletingCarId] = useState(null);
   const [importingCars, setImportingCars] = useState(false);
   const [form, setForm] = useState(emptyForm);
@@ -393,7 +419,24 @@ function App() {
 
   const handleChange = (event) => {
     const { name, value } = event.target;
-    setForm((current) => ({ ...current, [name]: value }));
+    setForm((current) => ({
+      ...current,
+      [name]: value,
+      ...(name === 'make' && value !== current.make ? { model: '' } : {}),
+    }));
+  };
+
+  const startEditing = (car) => {
+    setEditingCarId(car.id);
+    setForm(normalizeCar(car));
+    setMessage(`Редактирование: ${car.make} ${car.model}.`);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const cancelEditing = () => {
+    setEditingCarId(null);
+    setForm(emptyForm);
+    setMessage('');
   };
 
   const handlePhotoUpload = (event) => {
@@ -411,20 +454,24 @@ function App() {
 
     if (savingCar) return;
 
-    const newCar = normalizeCar({ ...form, id: crypto.randomUUID(), vin: form.vin.trim().toUpperCase() });
+    const nextCar = normalizeCar({ ...form, id: editingCarId || form.id || crypto.randomUUID(), vin: form.vin.trim().toUpperCase() });
     setSavingCar(true);
     setMessage('');
 
     try {
-      const { data, error } = await supabase
-        .from('cars')
-        .insert(carToDb(newCar, session.user.id))
-        .select('*')
-        .single();
+      const request = editingCarId
+        ? supabase.from('cars').update(carToDb(nextCar, session.user.id)).eq('id', editingCarId)
+        : supabase.from('cars').insert(carToDb(nextCar, session.user.id));
+      const { data, error } = await request.select('*').single();
 
       if (error) throw error;
-      setCars((current) => [dbToCar(data), ...current]);
+      const savedCar = dbToCar(data);
+      setCars((current) => editingCarId
+        ? current.map((car) => (car.id === savedCar.id ? savedCar : car))
+        : [savedCar, ...current]);
       setForm(emptyForm);
+      setEditingCarId(null);
+      setMessage(editingCarId ? 'Изменения автомобиля сохранены.' : 'Автомобиль добавлен в учет.');
     } catch (error) {
       setMessage(getErrorMessage(error, 'Не удалось сохранить автомобиль. Проверьте данные и повторите попытку.'));
     } finally {
@@ -518,12 +565,16 @@ function App() {
   };
 
   const signOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
     setMessage('');
     try {
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
     } catch (error) {
       setMessage(getErrorMessage(error, 'Не удалось выйти из аккаунта. Повторите попытку.'));
+    } finally {
+      setSigningOut(false);
     }
   };
 
@@ -545,7 +596,7 @@ function App() {
         h('p', { className: 'eyebrow' }, 'Car Flip Manager'),
         h('h1', null, 'Учет автомобилей в перепродаже'),
         h('p', { className: 'hero-text' }, 'Контролируйте закупки, ремонт, вложения и прибыль по каждой сделке в одном темном интерфейсе.'),
-        h('div', { className: 'session-row' }, h('span', null, session.user.email), h('button', { className: 'secondary-button', type: 'button', onClick: signOut }, 'Выйти')),
+        h('div', { className: 'session-row' }, h('span', null, session.user.email), h('button', { className: 'secondary-button', type: 'button', disabled: signingOut, onClick: signOut }, signingOut ? 'Выходим...' : 'Выйти')),
       ),
       h('div', { className: 'hero-card' }, icon('🚘'), h('span', null, 'Всего авто'), h('strong', null, cars.length)),
     ),
@@ -558,25 +609,25 @@ function App() {
     ),
     h('section', { className: 'workspace' },
       h('form', { className: 'panel form-panel', onSubmit: handleSubmit },
-        h('div', { className: 'panel-title' }, icon('➕'), h('h2', null, 'Добавить автомобиль')),
+        h('div', { className: 'panel-title' }, icon(editingCarId ? '✏️' : '➕'), h('h2', null, editingCarId ? 'Редактировать автомобиль' : 'Добавить автомобиль')),
         h('div', { className: 'photo-upload' },
           h('div', { className: 'photo-preview' }, form.photo ? h('img', { src: form.photo, alt: 'Предпросмотр автомобиля' }) : icon('📷')),
           h('label', { className: 'upload-button' }, 'Фото автомобиля', h('input', { type: 'file', accept: 'image/*', onChange: handlePhotoUpload })),
         ),
         h('div', { className: 'form-grid' },
           h(Input, { label: 'VIN', name: 'vin', value: form.vin, onChange: handleChange, required: true }),
-          h(Input, { label: 'Марка', name: 'make', value: form.make, onChange: handleChange, required: true }),
-          h(Input, { label: 'Модель', name: 'model', value: form.model, onChange: handleChange, required: true }),
+          h(SearchSelect, { label: 'Марка', name: 'make', value: form.make, options: makeOptions, onChange: handleChange, required: true, placeholder: 'Начните вводить марку' }),
+          h(SearchSelect, { label: 'Модель', name: 'model', value: form.model, options: getModelOptions(form.make), onChange: handleChange, required: true, disabled: !form.make, placeholder: form.make ? 'Начните вводить модель' : 'Сначала выберите марку' }),
           h(Input, { label: 'Год', name: 'year', value: form.year, onChange: handleChange, type: 'number', min: '1900' }),
-          h(Input, { label: 'Дата покупки', name: 'purchaseDate', value: form.purchaseDate, onChange: handleChange, type: 'date' }),
-          h(Input, { label: 'Покупка, ₽', name: 'purchasePrice', value: form.purchasePrice, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Доставка, ₽', name: 'deliveryCost', value: form.deliveryCost, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Ремонт, ₽', name: 'repairCost', value: form.repairCost, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Запчасти, ₽', name: 'partsCost', value: form.partsCost, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Доп. расходы, ₽', name: 'extraExpenses', value: form.extraExpenses, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Планируемая цена продажи', name: 'plannedSalePrice', value: form.plannedSalePrice, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Фактическая цена продажи', name: 'actualSalePrice', value: form.actualSalePrice, onChange: handleChange, type: 'number', min: '0' }),
-          h(Input, { label: 'Дата продажи', name: 'saleDate', value: form.saleDate, onChange: handleChange, type: 'date' }),
+          h(QuickDateInput, { label: 'Дата покупки', name: 'purchaseDate', value: form.purchaseDate, onChange: handleChange }),
+          h(MoneyInput, { label: 'Покупка, ₽', name: 'purchasePrice', value: form.purchasePrice, onChange: handleChange }),
+          h(MoneyInput, { label: 'Доставка, ₽', name: 'deliveryCost', value: form.deliveryCost, onChange: handleChange }),
+          h(MoneyInput, { label: 'Ремонт, ₽', name: 'repairCost', value: form.repairCost, onChange: handleChange }),
+          h(MoneyInput, { label: 'Запчасти, ₽', name: 'partsCost', value: form.partsCost, onChange: handleChange }),
+          h(MoneyInput, { label: 'Доп. расходы, ₽', name: 'extraExpenses', value: form.extraExpenses, onChange: handleChange }),
+          h(MoneyInput, { label: 'Планируемая цена продажи', name: 'plannedSalePrice', value: form.plannedSalePrice, onChange: handleChange }),
+          h(MoneyInput, { label: 'Фактическая цена продажи', name: 'actualSalePrice', value: form.actualSalePrice, onChange: handleChange }),
+          h(QuickDateInput, { label: 'Дата продажи', name: 'saleDate', value: form.saleDate, onChange: handleChange }),
           h(Input, { label: 'Контакт покупателя', name: 'buyerContact', value: form.buyerContact, onChange: handleChange, placeholder: 'Телефон, мессенджер или имя' }),
           h('label', null,
             h('span', null, 'Статус'),
@@ -589,7 +640,10 @@ function App() {
             h('textarea', { name: 'notes', value: form.notes, onChange: handleChange, rows: 4, placeholder: 'Особенности ремонта, переговоры с покупателем, документы...' }),
           ),
         ),
-        h('button', { className: 'primary-button', type: 'submit', disabled: savingCar }, savingCar ? 'Сохраняем...' : 'Добавить в учет'),
+        h('div', { className: 'form-actions' },
+          h('button', { className: 'primary-button', type: 'submit', disabled: savingCar }, savingCar ? 'Сохраняем...' : editingCarId ? 'Сохранить изменения' : 'Добавить в учет'),
+          editingCarId ? h('button', { className: 'secondary-button', type: 'button', disabled: savingCar, onClick: cancelEditing }, 'Отмена') : null,
+        ),
       ),
       h('section', { className: 'panel list-panel' },
         h('div', { className: 'panel-title list-title' },
@@ -597,9 +651,9 @@ function App() {
           h('span', null, carsLoading ? 'Загрузка...' : `${filteredCars.length} найдено`),
         ),
         h('div', { className: 'actions-row' },
-          h('button', { className: 'secondary-button', type: 'button', onClick: exportToExcel }, 'Экспорт в Excel'),
+          h('button', { className: 'secondary-button', type: 'button', disabled: importingCars, onClick: exportToExcel }, 'Экспорт в Excel'),
           h('button', { className: 'secondary-button', type: 'button', disabled: importingCars, onClick: () => importInputRef.current?.click() }, importingCars ? 'Импортируем...' : 'Импорт из Excel'),
-          h('button', { className: 'secondary-button', type: 'button', onClick: backupToJson }, 'Резервная копия JSON'),
+          h('button', { className: 'secondary-button', type: 'button', disabled: importingCars, onClick: backupToJson }, 'Резервная копия JSON'),
           h('input', { ref: importInputRef, className: 'hidden-input', type: 'file', accept: '.xlsx,.xls', onChange: handleExcelImport }),
         ),
         h('div', { className: 'toolbar' },
@@ -617,7 +671,7 @@ function App() {
           ),
         ),
         h('div', { className: 'car-list' },
-          filteredCars.map((car) => h(CarCard, { car, key: car.id, onRemove: removeCar, deleting: deletingCarId === car.id })),
+          filteredCars.map((car) => h(CarCard, { car, key: car.id, onEdit: startEditing, onRemove: removeCar, deleting: deletingCarId === car.id, busy: savingCar || importingCars })),
           filteredCars.length === 0 ? h('p', { className: 'empty-state' }, carsLoading ? 'Загружаем автомобили из Supabase...' : 'Автомобили не найдены. Измените поиск или фильтр.') : null,
         ),
       ),
@@ -671,7 +725,9 @@ function AuthScreen({ message, onMessage }) {
       h('button', {
         className: 'auth-switch',
         type: 'button',
+        disabled: loading,
         onClick: () => {
+          if (loading) return;
           onMessage('');
           setMode(mode === 'signup' ? 'signin' : 'signup');
         },
@@ -701,6 +757,48 @@ function Input({ label, ...props }) {
   return h('label', null, h('span', null, label), h('input', props));
 }
 
+function MoneyInput({ label, value, ...props }) {
+  const numericValue = toNumber(value);
+  return h('label', null,
+    h('span', null, label),
+    h('input', { ...props, value, type: 'number', min: '0' }),
+    h('small', { className: 'money-preview' }, value ? formatMoney(numericValue) : 'Введите сумму'),
+  );
+}
+
+function getModelOptions(make) {
+  return carCatalog.find((item) => item.make.toLowerCase() === String(make).toLowerCase())?.models ?? [];
+}
+
+function SearchSelect({ label, options, ...props }) {
+  const listId = `${props.name}-options`;
+  return h('label', null,
+    h('span', null, label),
+    h('input', { ...props, list: listId, autoComplete: 'off' }),
+    h('datalist', { id: listId }, options.map((option) => h('option', { key: option, value: option }))),
+  );
+}
+
+function QuickDateInput({ label, name, value, onChange }) {
+  const [year = '', month = '', day = ''] = String(value || '').split('-');
+  const currentYear = new Date().getFullYear();
+  const emit = (nextYear, nextMonth, nextDay) => {
+    const nextValue = nextYear && nextMonth && nextDay ? `${nextYear}-${nextMonth}-${nextDay}` : '';
+    onChange({ target: { name, value: nextValue } });
+  };
+  const years = Array.from({ length: 41 }, (_, index) => String(currentYear + 1 - index));
+  const months = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, '0'));
+  const days = Array.from({ length: 31 }, (_, index) => String(index + 1).padStart(2, '0'));
+  return h('label', null,
+    h('span', null, label),
+    h('div', { className: 'date-picker' },
+      h('select', { value: day, onChange: (event) => emit(year, month, event.target.value) }, h('option', { value: '' }, 'День'), days.map((item) => h('option', { key: item, value: item }, item))),
+      h('select', { value: month, onChange: (event) => emit(year, event.target.value, day) }, h('option', { value: '' }, 'Месяц'), months.map((item) => h('option', { key: item, value: item }, item))),
+      h('select', { value: year, onChange: (event) => emit(event.target.value, month, day) }, h('option', { value: '' }, 'Год'), years.map((item) => h('option', { key: item, value: item }, item))),
+    ),
+  );
+}
+
 function Metric({ label, value, accent }) {
   return h('div', { className: 'metric' }, h('span', null, label), h('strong', { className: accent }, value));
 }
@@ -710,7 +808,7 @@ function Detail({ label, value }) {
   return h('span', null, `${label}: ${value}`);
 }
 
-function CarCard({ car, onRemove, deleting }) {
+function CarCard({ car, onEdit, onRemove, deleting, busy }) {
   const { totalCost, netProfit, roi, hasActualSale } = calculateTotals(car);
   return h('article', { className: 'car-card' },
     h('div', { className: 'car-photo' }, car.photo ? h('img', { src: car.photo, alt: `${car.make} ${car.model}` }) : icon('🚘')),
@@ -744,7 +842,10 @@ function CarCard({ car, onRemove, deleting }) {
         h(Detail, { label: 'Покупатель', value: car.buyerContact }),
       ),
       car.notes ? h('p', { className: 'notes' }, car.notes) : null,
-      h('button', { className: 'ghost-button', type: 'button', disabled: deleting, onClick: () => onRemove(car.id) }, deleting ? 'Удаляем...' : 'Удалить'),
+      h('div', { className: 'card-actions' },
+        h('button', { className: 'secondary-button', type: 'button', disabled: busy || deleting, onClick: () => onEdit(car) }, 'Редактировать'),
+        h('button', { className: 'ghost-button', type: 'button', disabled: deleting || busy, onClick: () => onRemove(car.id) }, deleting ? 'Удаляем...' : 'Удалить'),
+      ),
     ),
   );
 }
