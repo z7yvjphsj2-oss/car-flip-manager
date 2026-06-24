@@ -254,6 +254,13 @@ function getPaymentLabel(type, amount) {
   return 'Без доплаты';
 }
 
+function getExchangePaymentSummary(type, amount) {
+  const sum = toNumber(amount);
+  if (type === 'received') return `Доплата в мою сторону: ${formatMoney(sum)}`;
+  if (type === 'paid') return `Моя доплата: ${formatMoney(sum)}`;
+  return 'Обмен без доплаты';
+}
+
 function formatPercent(value) {
   return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value)}%`;
 }
@@ -404,6 +411,7 @@ function App() {
   const [searchVin, setSearchVin] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [message, setMessage] = useState('');
+  const [exchangeDraft, setExchangeDraft] = useState(null);
   const importInputRef = useRef(null);
 
   useEffect(() => {
@@ -505,22 +513,8 @@ function App() {
         ...current,
         [name]: value,
         ...(name === 'make' && value !== current.make ? { model: '' } : {}),
-        ...(name === 'acquisitionType' && value === 'purchase' ? {
-          exchangePaymentType: 'none',
-          exchangePaymentAmount: '',
-          exchangeComment: '',
-          exchangePreviousCarId: '',
-          exchangeNextCarId: '',
-          exchangeSourceMake: '',
-          exchangeSourceModel: '',
-          exchangeSourceVin: '',
-        } : {}),
         ...(name === 'exchangePaymentType' && value === 'none' ? { exchangePaymentAmount: '' } : {}),
       };
-      const sourceCar = carById[next.exchangePreviousCarId];
-      if (!editingCarId && next.acquisitionType === 'exchange' && sourceCar && ['exchangePaymentType', 'exchangePaymentAmount'].includes(name)) {
-        next.purchasePrice = calculateExchangePurchasePrice(sourceCar, next.exchangePaymentType, next.exchangePaymentAmount);
-      }
       return next;
     });
   };
@@ -539,23 +533,51 @@ function App() {
   };
 
   const startExchange = (car) => {
-    const sourceCost = calculateTotals(car).totalCost;
+    setExchangeDraft({
+      sourceCarId: car.id,
+      paymentType: 'none',
+      paymentAmount: '',
+      comment: '',
+    });
+    setMessage(`Настройте условия обмена для ${car.make} ${car.model}.`);
+  };
+
+  const updateExchangeDraft = (event) => {
+    const { name, value } = event.target;
+    setExchangeDraft((current) => ({
+      ...current,
+      [name]: value,
+      ...(name === 'paymentType' && value === 'none' ? { paymentAmount: '' } : {}),
+    }));
+  };
+
+  const cancelExchange = () => {
+    setExchangeDraft(null);
+    setMessage('');
+  };
+
+  const confirmExchange = () => {
+    const sourceCar = carById[exchangeDraft?.sourceCarId];
+    if (!sourceCar) return;
+    const purchasePrice = calculateExchangePurchasePrice(sourceCar, exchangeDraft.paymentType, exchangeDraft.paymentAmount);
     setEditingCarId(null);
     setForm(normalizeCar({
       ...emptyForm,
       id: crypto.randomUUID(),
       purchaseDate: new Date().toISOString().slice(0, 10),
-      purchasePrice: sourceCost,
+      purchasePrice,
       acquisitionType: 'exchange',
       status: 'bought',
-      exchangePreviousCarId: car.id,
-      exchangeSourceMake: car.make,
-      exchangeSourceModel: car.model,
-      exchangeSourceVin: car.vin,
-      exchangePaymentType: 'none',
-      exchangePaymentAmount: '',
+      exchangePreviousCarId: sourceCar.id,
+      exchangeSourceMake: sourceCar.make,
+      exchangeSourceModel: sourceCar.model,
+      exchangeSourceVin: sourceCar.vin,
+      exchangePaymentType: exchangeDraft.paymentType,
+      exchangePaymentAmount: exchangeDraft.paymentType === 'none' ? '' : exchangeDraft.paymentAmount,
+      exchangeComment: exchangeDraft.comment,
     }));
-    setMessage(`Создайте полноценную карточку автомобиля, полученного в обмен на ${car.make} ${car.model}.`);
+    setExchangeDraft(null);
+    setMessage(`Заполните стандартную карточку нового автомобиля, полученного в обмен на ${sourceCar.make} ${sourceCar.model}.`);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -598,7 +620,14 @@ function App() {
       let savedSourceCar = null;
       const sourceCar = !editingCarId && savedCar.acquisitionType === 'exchange' ? exchangeSourceCar : null;
       if (sourceCar) {
-        const linkedSource = normalizeCar({ ...sourceCar, status: 'exchanged', exchangeNextCarId: savedCar.id });
+        const linkedSource = normalizeCar({
+          ...sourceCar,
+          status: 'exchanged',
+          exchangeNextCarId: savedCar.id,
+          exchangePaymentType: savedCar.exchangePaymentType,
+          exchangePaymentAmount: savedCar.exchangePaymentAmount,
+          exchangeComment: savedCar.exchangeComment,
+        });
         const { data: sourceData, error: sourceError } = await supabase
           .from('cars')
           .update(carToDb(linkedSource, session.user.id))
@@ -753,9 +782,10 @@ function App() {
       h(StatCard, { icon: '📊', label: 'Рентабельность', value: formatPercent(roi), positive: roi >= 0 }),
       h(StatCard, { icon: '✅', label: 'Продано', value: stats.sold }),
     ),
+    exchangeDraft ? h(ExchangeDialog, { draft: exchangeDraft, sourceCar: carById[exchangeDraft.sourceCarId], onChange: updateExchangeDraft, onCancel: cancelExchange, onConfirm: confirmExchange }) : null,
     h('section', { className: 'workspace' },
       h('form', { className: 'panel form-panel', onSubmit: handleSubmit },
-        h('div', { className: 'panel-title' }, icon(editingCarId ? '✏️' : '➕'), h('h2', null, editingCarId ? 'Редактировать автомобиль' : form.acquisitionType === 'exchange' ? 'Добавить автомобиль по обмену' : 'Добавить автомобиль')),
+        h('div', { className: 'panel-title' }, icon(editingCarId ? '✏️' : '➕'), h('h2', null, editingCarId ? 'Редактировать автомобиль' : 'Добавить автомобиль')),
         h('div', { className: 'photo-upload' },
           h('div', { className: 'photo-preview' }, form.photo ? h('img', { src: form.photo, alt: 'Предпросмотр автомобиля' }) : icon('📷')),
           h('label', { className: 'upload-button' }, 'Фото автомобиля', h('input', { type: 'file', accept: 'image/*', onChange: handlePhotoUpload })),
@@ -765,16 +795,8 @@ function App() {
           h(SearchSelect, { label: 'Марка', name: 'make', value: form.make, options: makeOptions, onChange: handleChange, required: true, placeholder: 'Начните вводить марку' }),
           h(SearchSelect, { label: 'Модель', name: 'model', value: form.model, options: getModelOptions(form.make), onChange: handleChange, required: true, disabled: !form.make, placeholder: form.make ? 'Начните вводить модель' : 'Сначала выберите марку' }),
           h(Input, { label: 'Год', name: 'year', value: form.year, onChange: handleChange, type: 'number', min: '1900' }),
-          h('label', null,
-            h('span', null, 'Тип получения'),
-            h('select', { name: 'acquisitionType', value: form.acquisitionType, onChange: handleChange },
-              h('option', { value: 'purchase' }, 'Покупка'),
-              h('option', { value: 'exchange' }, 'Обмен'),
-            ),
-          ),
-          h(QuickDateInput, { label: form.acquisitionType === 'exchange' ? 'Дата получения' : 'Дата покупки', name: 'purchaseDate', value: form.purchaseDate, onChange: handleChange }),
-          h(MoneyInput, { label: form.acquisitionType === 'exchange' ? 'Себестоимость по обмену, ₽' : 'Покупка, ₽', name: 'purchasePrice', value: form.purchasePrice, onChange: handleChange }),
-          form.acquisitionType === 'exchange' ? h(ExchangeDetailsFields, { form, sourceCar: carById[form.exchangePreviousCarId], onChange: handleChange }) : null,
+          h(QuickDateInput, { label: 'Дата покупки', name: 'purchaseDate', value: form.purchaseDate, onChange: handleChange }),
+          h(MoneyInput, { label: 'Покупка, ₽', name: 'purchasePrice', value: form.purchasePrice, onChange: handleChange }),
           h(MoneyInput, { label: 'Доставка, ₽', name: 'deliveryCost', value: form.deliveryCost, onChange: handleChange }),
           h(MoneyInput, { label: 'Ремонт, ₽', name: 'repairCost', value: form.repairCost, onChange: handleChange }),
           h(MoneyInput, { label: 'Запчасти, ₽', name: 'partsCost', value: form.partsCost, onChange: handleChange }),
@@ -954,40 +976,38 @@ function QuickDateInput({ label, name, value, onChange }) {
 }
 
 
-function ExchangeDetailsFields({ form, sourceCar, onChange }) {
-  const sourceCost = sourceCar ? calculateTotals(sourceCar).totalCost : toNumber(form.purchasePrice);
-  const nextCost = sourceCar ? calculateExchangePurchasePrice(sourceCar, form.exchangePaymentType, form.exchangePaymentAmount) : toNumber(form.purchasePrice);
-  return [
-    h('div', { className: 'wide-field exchange-panel', key: 'exchange-panel' },
-      h('p', { className: 'eyebrow' }, 'Исходный автомобиль'),
-      h('div', { className: 'exchange-summary' },
-        h(Metric, { label: 'Автомобиль', value: sourceCar ? `${sourceCar.make} ${sourceCar.model}` : `${form.exchangeSourceMake} ${form.exchangeSourceModel}`.trim() || 'Укажите данные' }),
-        h(Metric, { label: 'ID', value: form.exchangePreviousCarId || '—' }),
-        h(Metric, { label: 'VIN', value: sourceCar?.vin || form.exchangeSourceVin || '—' }),
+function ExchangeDialog({ draft, sourceCar, onChange, onCancel, onConfirm }) {
+  const sourceCost = sourceCar ? calculateTotals(sourceCar).totalCost : 0;
+  const nextCost = sourceCar ? calculateExchangePurchasePrice(sourceCar, draft.paymentType, draft.paymentAmount) : 0;
+  return h('div', { className: 'modal-backdrop', role: 'presentation' },
+    h('section', { className: 'panel exchange-dialog', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'exchange-dialog-title' },
+      h('div', { className: 'panel-title' }, icon('🔁'), h('h2', { id: 'exchange-dialog-title' }, 'Сценарий обмена')),
+      h('p', { className: 'dialog-copy' }, sourceCar ? `Сначала зафиксируйте условия обмена для ${sourceCar.make} ${sourceCar.model}. После подтверждения откроется обычная форма добавления нового автомобиля.` : 'Исходный автомобиль не найден.'),
+      h('div', { className: 'exchange-summary compact' },
         h(Metric, { label: 'Себестоимость исходного авто', value: formatMoney(sourceCost) }),
-        h(Metric, { label: 'Расчет себестоимости нового авто', value: formatMoney(nextCost), accent: 'positive' }),
+        h(Metric, { label: 'Стартовая себестоимость нового авто', value: formatMoney(nextCost), accent: 'positive' }),
       ),
-      h('p', { className: 'eyebrow' }, 'Условия обмена'),
       h('div', { className: 'form-grid' },
-        h(Input, { label: 'Исходный автомобиль — марка', name: 'exchangeSourceMake', value: form.exchangeSourceMake, onChange, readOnly: Boolean(sourceCar) }),
-        h(Input, { label: 'Исходный автомобиль — модель', name: 'exchangeSourceModel', value: form.exchangeSourceModel, onChange, readOnly: Boolean(sourceCar) }),
-        h(Input, { label: 'Исходный автомобиль — VIN', name: 'exchangeSourceVin', value: form.exchangeSourceVin, onChange, readOnly: Boolean(sourceCar) }),
-        h('label', null,
+        h('label', { className: 'wide-field' },
           h('span', null, 'Тип доплаты'),
-          h('select', { name: 'exchangePaymentType', value: form.exchangePaymentType, onChange },
+          h('select', { name: 'paymentType', value: draft.paymentType, onChange },
+            h('option', { value: 'none' }, 'Без доплаты'),
             h('option', { value: 'received' }, 'Мне доплатили'),
             h('option', { value: 'paid' }, 'Я доплатил'),
-            h('option', { value: 'none' }, 'Без доплаты'),
           ),
         ),
-        h(MoneyInput, { label: 'Сумма доплаты', name: 'exchangePaymentAmount', value: form.exchangePaymentAmount, onChange, disabled: form.exchangePaymentType === 'none' }),
+        h(MoneyInput, { label: 'Сумма доплаты', name: 'paymentAmount', value: draft.paymentAmount, onChange, disabled: draft.paymentType === 'none' }),
         h('label', { className: 'wide-field' },
-          h('span', null, 'Комментарий по обмену'),
-          h('textarea', { name: 'exchangeComment', value: form.exchangeComment, onChange, rows: 3, placeholder: 'Условия обмена, оценка сторон, договоренности...' }),
+          h('span', null, 'Комментарий к обмену'),
+          h('textarea', { name: 'comment', value: draft.comment, onChange, rows: 3, placeholder: 'Условия обмена, оценка сторон, договоренности...' }),
         ),
       ),
+      h('div', { className: 'dialog-actions' },
+        h('button', { className: 'secondary-button', type: 'button', onClick: onCancel }, 'Отмена'),
+        h('button', { className: 'primary-button', type: 'button', disabled: !sourceCar, onClick: onConfirm }, 'Продолжить к карточке авто'),
+      ),
     ),
-  ];
+  );
 }
 
 function Metric({ label, value, accent }) {
@@ -1054,11 +1074,11 @@ function CarCard({ car, carById, onEdit, onExchange, onRemove, deleting, busy })
       ),
       (car.acquisitionType === 'exchange' || car.status === 'exchanged' || previousCar || nextCar) ? h('div', { className: 'deal-history' },
         h('strong', null, '🔁 История сделки'),
+        car.status === 'exchanged' && nextCar ? h('span', null, `Обменян на ${nextCar.make} ${nextCar.model} ${nextCar.year || ''}`.trim()) : null,
         car.acquisitionType === 'exchange' ? h('span', null, 'Получен по обмену') : null,
-        car.status === 'exchanged' ? h('span', null, 'Обменян на другой автомобиль') : null,
         h(Detail, { label: 'Получен от', value: getCarTitle(previousCar) !== '—' ? getCarTitle(previousCar) : `${car.exchangeSourceMake} ${car.exchangeSourceModel} ${car.exchangeSourceVin}`.trim() }),
         h(Detail, { label: 'Передан в', value: getCarTitle(nextCar) !== '—' ? getCarTitle(nextCar) : '' }),
-        h(Detail, { label: 'Доплата', value: getPaymentLabel(car.exchangePaymentType, car.exchangePaymentAmount) }),
+        h('span', null, getExchangePaymentSummary(car.exchangePaymentType, car.exchangePaymentAmount)),
         h(Detail, { label: 'Комментарий', value: car.exchangeComment }),
         exchangeChain.length > 1 ? h('div', { className: 'exchange-chain' }, exchangeChain.map((item, index) => h('span', { key: item.id }, `${index ? '↓ ' : ''}${item.make} ${item.model}`))) : null,
       ) : null,
