@@ -77,6 +77,11 @@ const excelColumns = [
   { key: 'exchangePaymentType', header: 'Тип доплаты' },
   { key: 'exchangePaymentAmount', header: 'Сумма доплаты, ₽' },
   { key: 'exchangeComment', header: 'Комментарий по обмену' },
+  { key: 'exchangePreviousCarId', header: 'ID предыдущего авто в обмене' },
+  { key: 'exchangeNextCarId', header: 'ID следующего авто в обмене' },
+  { key: 'exchangeSourceMake', header: 'Марка авто-источника обмена' },
+  { key: 'exchangeSourceModel', header: 'Модель авто-источника обмена' },
+  { key: 'exchangeSourceVin', header: 'VIN авто-источника обмена' },
   { key: 'previousCarTitle', header: 'Получен от' },
   { key: 'nextCarTitle', header: 'Передан в' },
 ];
@@ -311,6 +316,11 @@ function createExcelRow(car) {
     exchangePaymentType: getPaymentLabel(car.exchangePaymentType, car.exchangePaymentAmount),
     exchangePaymentAmount: toNumber(car.exchangePaymentAmount),
     exchangeComment: car.exchangeComment,
+    exchangePreviousCarId: car.exchangePreviousCarId,
+    exchangeNextCarId: car.exchangeNextCarId,
+    exchangeSourceMake: car.exchangeSourceMake,
+    exchangeSourceModel: car.exchangeSourceModel,
+    exchangeSourceVin: car.exchangeSourceVin,
     previousCarTitle: car.exchangeSourceMake ? `${car.exchangeSourceMake} ${car.exchangeSourceModel} ${car.exchangeSourceVin}`.trim() : '',
     nextCarTitle: car.exchangeNextCarId || '',
   };
@@ -325,6 +335,14 @@ function parseImportedCars(rows) {
   const statusByLabel = {
     ...Object.fromEntries(Object.entries(statusLabels).map(([value, label]) => [label, value])),
     Продажа: 'sale',
+  };
+  const paymentTypeByLabel = {
+    'Получили доплату': 'received',
+    'Доплатили': 'paid',
+    'Без доплаты': 'none',
+    received: 'received',
+    paid: 'paid',
+    none: 'none',
   };
   return rows
     .map((row) => normalizeCar({
@@ -346,9 +364,15 @@ function parseImportedCars(rows) {
       notes: getImportValue(row, 'notes'),
       status: statusByLabel[getImportValue(row, 'status')] || getImportValue(row, 'status') || 'bought',
       photo: getImportValue(row, 'photo'),
-      acquisitionType: getImportValue(row, 'acquisitionType') === 'Обмен' ? 'exchange' : 'purchase',
+      acquisitionType: getImportValue(row, 'acquisitionType') === 'Обмен' || getImportValue(row, 'acquisitionType') === 'exchange' ? 'exchange' : 'purchase',
+      exchangePaymentType: paymentTypeByLabel[getImportValue(row, 'exchangePaymentType')] || 'none',
       exchangePaymentAmount: getImportValue(row, 'exchangePaymentAmount'),
       exchangeComment: getImportValue(row, 'exchangeComment'),
+      exchangePreviousCarId: getImportValue(row, 'exchangePreviousCarId'),
+      exchangeNextCarId: getImportValue(row, 'exchangeNextCarId'),
+      exchangeSourceMake: getImportValue(row, 'exchangeSourceMake'),
+      exchangeSourceModel: getImportValue(row, 'exchangeSourceModel'),
+      exchangeSourceVin: getImportValue(row, 'exchangeSourceVin'),
     }))
     .filter((car) => car.vin || car.make || car.model);
 }

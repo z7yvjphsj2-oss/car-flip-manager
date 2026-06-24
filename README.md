@@ -32,6 +32,7 @@ npm run preview
 1. В Supabase Dashboard откройте **SQL Editor → New query**.
 2. Скопируйте весь SQL из файла `supabase-schema.sql`.
 3. Нажмите **Run**. Скрипт создаст таблицы `cars`, `expenses`, `notes`, `sales`, индексы, триггеры `updated_at` и RLS-политики для данных текущего пользователя.
+4. Если база была создана до добавления сценариев обмена, дополнительно выполните `supabase-exchange-migration.sql`: он добавляет недостающие exchange-колонки в `cars` и обновляет schema cache PostgREST.
 
 ### 2. Где вставить publishable key
 
