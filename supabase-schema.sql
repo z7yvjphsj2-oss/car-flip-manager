@@ -21,8 +21,17 @@ create table if not exists public.cars (
   sale_date date,
   buyer_contact text default '',
   notes text default '',
-  status text not null default 'bought' check (status in ('bought', 'repair', 'sale', 'sold')),
+  status text not null default 'bought' check (status in ('bought', 'repair', 'sale', 'sold', 'exchanged')),
   photo text default '',
+  acquisition_type text not null default 'purchase' check (acquisition_type in ('purchase', 'exchange')),
+  exchange_payment_type text not null default 'none' check (exchange_payment_type in ('received', 'paid', 'none')),
+  exchange_payment_amount numeric default 0,
+  exchange_comment text default '',
+  exchange_previous_car_id uuid references public.cars(id) on delete set null,
+  exchange_next_car_id uuid references public.cars(id) on delete set null,
+  exchange_source_make text default '',
+  exchange_source_model text default '',
+  exchange_source_vin text default '',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -63,11 +72,30 @@ create table if not exists public.sales (
 
 create index if not exists cars_user_id_created_at_idx on public.cars (user_id, created_at desc);
 create index if not exists cars_user_id_vin_idx on public.cars (user_id, vin);
+create index if not exists cars_exchange_previous_car_id_idx on public.cars (exchange_previous_car_id);
+create index if not exists cars_exchange_next_car_id_idx on public.cars (exchange_next_car_id);
 create index if not exists expenses_user_id_car_id_idx on public.expenses (user_id, car_id);
 create index if not exists expenses_car_id_created_at_idx on public.expenses (car_id, created_at desc);
 create index if not exists notes_user_id_car_id_idx on public.notes (user_id, car_id);
 create index if not exists notes_car_id_created_at_idx on public.notes (car_id, created_at desc);
 create index if not exists sales_user_id_car_id_idx on public.sales (user_id, car_id);
+
+-- Safe migration for databases created before exchange support.
+alter table public.cars drop constraint if exists cars_status_check;
+alter table public.cars add constraint cars_status_check check (status in ('bought', 'repair', 'sale', 'sold', 'exchanged'));
+alter table public.cars add column if not exists acquisition_type text not null default 'purchase';
+alter table public.cars add column if not exists exchange_payment_type text not null default 'none';
+alter table public.cars add column if not exists exchange_payment_amount numeric default 0;
+alter table public.cars add column if not exists exchange_comment text default '';
+alter table public.cars add column if not exists exchange_previous_car_id uuid references public.cars(id) on delete set null;
+alter table public.cars add column if not exists exchange_next_car_id uuid references public.cars(id) on delete set null;
+alter table public.cars add column if not exists exchange_source_make text default '';
+alter table public.cars add column if not exists exchange_source_model text default '';
+alter table public.cars add column if not exists exchange_source_vin text default '';
+alter table public.cars drop constraint if exists cars_acquisition_type_check;
+alter table public.cars add constraint cars_acquisition_type_check check (acquisition_type in ('purchase', 'exchange'));
+alter table public.cars drop constraint if exists cars_exchange_payment_type_check;
+alter table public.cars add constraint cars_exchange_payment_type_check check (exchange_payment_type in ('received', 'paid', 'none'));
 
 create or replace function public.set_updated_at()
 returns trigger
