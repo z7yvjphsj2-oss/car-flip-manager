@@ -517,3 +517,19 @@ button:disabled {
   .exchange-dialog { width: 100%; border-radius: 24px; }
   .exchange-summary.compact, .dialog-actions { grid-template-columns: 1fr; }
 }
+
+.pro-main { display: grid; gap: 16px; }
+.pro-heading h1, .pro-main h2 { margin: 0; }
+.pro-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-block: 12px; }
+.pro-fieldset { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
+.pro-fieldset legend { margin-block: 8px; font-weight: 600; }
+.pro-submit, .pro-fee { margin-top: 14px; }
+.pro-check { display: flex; align-items: center; gap: 8px; }
+.pro-check input { width: auto; }
+.pro-message { margin: 0; overflow-wrap: anywhere; }
+.pro-history { padding-inline-start: 22px; }
+.pro-history li { margin-block: 8px; overflow-wrap: anywhere; }
+.pro-history li > * { display: inline-block; margin-inline-end: 12px; margin-block: 3px; }
+
+.pro-financial-metrics { grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr)); }
+.pro-financial-metrics .notes { grid-column: 1 / -1; margin-block: 4px 0; }

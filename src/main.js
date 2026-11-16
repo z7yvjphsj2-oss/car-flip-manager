@@ -1,23 +1,38 @@
+import { CarCard } from './car-card.js';
+import { ProductionFinancialPro } from './financial-pro-section.js';
+import { listNativeProIds, listProLinks } from './financial-pro.js';
+import { ProWorkspace } from './pro-test-app.js';
+import { productionProRequest } from './financial-production-client.js';
+import { productionProWrites } from './financial-production-config.js';
+import { icon, StatCard, Input, Metric } from './ui-components.js';
+import { supabase, isSupabaseConfigured } from './supabase-client.js';
+import { SUPABASE_URL } from './supabase-config.js';
+import { createAuthService } from './auth-service.js';
+import { createCarRepository } from './car-repository.js';
+import { createLegacyMigration } from './legacy-storage.js';
+import { filterCars, prepareCarSave, linkExchangeSource, applySavedCar } from './car-operations.js';
+import { createFileTransfers } from './import-export.js';
+import { statusLabels, emptyForm, normalizeCar, dbToCar } from './car-model.js';
+import { toNumber, ImportValidationError } from './validation.js';
+import { calculateTotals, calculateExchangePurchasePrice, calculateStats, calculateSummary } from './finance.js';
+import { formatMoney, formatPercent, getCarTitle, getExchangePaymentSummary } from './formatting.js';
+import { getExchangeChain } from './exchanges.js';
 import React, { useEffect, useMemo, useRef, useState } from 'https://esm.sh/react@19.1.0';
 import { createRoot } from 'https://esm.sh/react-dom@19.1.0/client';
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import * as XLSX from 'https://esm.sh/xlsx@0.18.5';
-import { SUPABASE_ANON_KEY, SUPABASE_URL } from './supabase-config.js';
+import * as XLSX from 'https://cdn.sheetjs.com/xlsx-0.20.3/package/xlsx.mjs';
+import * as cptable from 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/cpexcel.full.mjs';
+import { createOperationLock } from './operations.js';
 
 const h = React.createElement;
-const STORAGE_KEY = 'car-flip-manager-cars';
-const MIGRATION_KEY_PREFIX = 'car-flip-manager-supabase-migrated';
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const isSupabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
-const supabase = isSupabaseConfigured ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+XLSX.set_cptable(cptable);
+const fileTransfers = createFileTransfers({ XLSX, document, URL, Blob });
+const authService = createAuthService(supabase);
+const carRepository = createCarRepository(supabase);
+const migrateLegacyCars = createLegacyMigration({ repository: carRepository, isConfigured: isSupabaseConfigured, getStorage: () => globalThis.localStorage });
+const localProCheck = globalThis.location?.hostname === '127.0.0.1' &&
+  new URLSearchParams(location.search).get('pro-check') === '1';
+const authProject = localProCheck ? new URL(SUPABASE_URL).hostname.split('.')[0] : null;
 
-const statusLabels = {
-  bought: 'Куплен',
-  repair: 'Ремонт',
-  sale: 'В продаже',
-  sold: 'Продан',
-  exchanged: 'Обменян',
-};
 
 
 const carCatalog = [
@@ -52,379 +67,23 @@ const statusOptions = [
   { value: 'exchanged', label: statusLabels.exchanged },
 ];
 
-const excelColumns = [
-  { key: 'vin', header: 'VIN' },
-  { key: 'make', header: 'Марка' },
-  { key: 'model', header: 'Модель' },
-  { key: 'year', header: 'Год' },
-  { key: 'purchaseDate', header: 'Дата покупки' },
-  { key: 'purchasePrice', header: 'Покупка, ₽' },
-  { key: 'deliveryCost', header: 'Доставка, ₽' },
-  { key: 'repairCost', header: 'Ремонт, ₽' },
-  { key: 'partsCost', header: 'Запчасти, ₽' },
-  { key: 'extraExpenses', header: 'Доп. расходы, ₽' },
-  { key: 'totalCost', header: 'Общая себестоимость, ₽' },
-  { key: 'plannedSalePrice', header: 'Планируемая цена продажи, ₽' },
-  { key: 'actualSalePrice', header: 'Фактическая цена продажи, ₽' },
-  { key: 'netProfit', header: 'Чистая прибыль, ₽' },
-  { key: 'roi', header: 'Рентабельность, %' },
-  { key: 'saleDate', header: 'Дата продажи' },
-  { key: 'buyerContact', header: 'Контакт покупателя' },
-  { key: 'notes', header: 'Заметки' },
-  { key: 'status', header: 'Статус' },
-  { key: 'photo', header: 'Фото (Data URL)' },
-  { key: 'acquisitionType', header: 'Тип получения' },
-  { key: 'exchangePaymentType', header: 'Тип доплаты' },
-  { key: 'exchangePaymentAmount', header: 'Сумма доплаты, ₽' },
-  { key: 'exchangeComment', header: 'Комментарий по обмену' },
-  { key: 'exchangePreviousCarId', header: 'ID предыдущего авто в обмене' },
-  { key: 'exchangeNextCarId', header: 'ID следующего авто в обмене' },
-  { key: 'exchangeSourceMake', header: 'Марка авто-источника обмена' },
-  { key: 'exchangeSourceModel', header: 'Модель авто-источника обмена' },
-  { key: 'exchangeSourceVin', header: 'VIN авто-источника обмена' },
-  { key: 'previousCarTitle', header: 'Получен от' },
-  { key: 'nextCarTitle', header: 'Передан в' },
-];
 
-const emptyForm = {
-  vin: '',
-  make: '',
-  model: '',
-  year: '',
-  purchaseDate: '',
-  purchasePrice: '',
-  deliveryCost: '',
-  repairCost: '',
-  partsCost: '',
-  extraExpenses: '',
-  plannedSalePrice: '',
-  actualSalePrice: '',
-  saleDate: '',
-  buyerContact: '',
-  notes: '',
-  status: 'bought',
-  photo: '',
-  acquisitionType: 'purchase',
-  exchangePaymentType: 'none',
-  exchangePaymentAmount: '',
-  exchangeComment: '',
-  exchangePreviousCarId: '',
-  exchangeNextCarId: '',
-  exchangeSourceMake: '',
-  exchangeSourceModel: '',
-  exchangeSourceVin: '',
-};
-
-function normalizeCar(car) {
-  return {
-    ...emptyForm,
-    ...car,
-    id: UUID_PATTERN.test(String(car.id || '')) ? car.id : crypto.randomUUID(),
-    vin: String(car.vin || '').trim().toUpperCase(),
-    year: car.year ?? '',
-    purchaseDate: car.purchaseDate ?? '',
-    purchasePrice: car.purchasePrice ?? '',
-    deliveryCost: car.deliveryCost ?? '',
-    repairCost: car.repairCost ?? '',
-    partsCost: car.partsCost ?? '',
-    extraExpenses: car.extraExpenses ?? '',
-    plannedSalePrice: car.plannedSalePrice ?? '',
-    actualSalePrice: car.actualSalePrice ?? car.salePrice ?? '',
-    saleDate: car.saleDate ?? '',
-    buyerContact: car.buyerContact ?? '',
-    notes: car.notes ?? '',
-    status: statusLabels[car.status] ? car.status : 'bought',
-    photo: car.photo ?? '',
-    acquisitionType: car.acquisitionType === 'exchange' ? 'exchange' : 'purchase',
-    exchangePaymentType: ['received', 'paid', 'none'].includes(car.exchangePaymentType) ? car.exchangePaymentType : 'none',
-    exchangePaymentAmount: car.exchangePaymentAmount ?? '',
-    exchangeComment: car.exchangeComment ?? '',
-    exchangePreviousCarId: car.exchangePreviousCarId ?? '',
-    exchangeNextCarId: car.exchangeNextCarId ?? '',
-    exchangeSourceMake: car.exchangeSourceMake ?? '',
-    exchangeSourceModel: car.exchangeSourceModel ?? '',
-    exchangeSourceVin: String(car.exchangeSourceVin || '').trim().toUpperCase(),
-  };
-}
-
-function dbToCar(row) {
-  return normalizeCar({
-    id: row.id,
-    vin: row.vin,
-    make: row.make,
-    model: row.model,
-    year: row.year,
-    purchaseDate: row.purchase_date || '',
-    purchasePrice: row.purchase_price ?? '',
-    deliveryCost: row.delivery_cost ?? '',
-    repairCost: row.repair_cost ?? '',
-    partsCost: row.parts_cost ?? '',
-    extraExpenses: row.extra_expenses ?? '',
-    plannedSalePrice: row.planned_sale_price ?? '',
-    actualSalePrice: row.actual_sale_price ?? '',
-    saleDate: row.sale_date || '',
-    buyerContact: row.buyer_contact,
-    notes: row.notes,
-    status: row.status,
-    photo: row.photo,
-    acquisitionType: row.acquisition_type,
-    exchangePaymentType: row.exchange_payment_type,
-    exchangePaymentAmount: row.exchange_payment_amount ?? '',
-    exchangeComment: row.exchange_comment,
-    exchangePreviousCarId: row.exchange_previous_car_id,
-    exchangeNextCarId: row.exchange_next_car_id,
-    exchangeSourceMake: row.exchange_source_make,
-    exchangeSourceModel: row.exchange_source_model,
-    exchangeSourceVin: row.exchange_source_vin,
-  });
-}
-
-function emptyToNull(value) {
-  return value === '' || value === undefined || value === null ? null : value;
-}
-
-function carToDb(car, userId) {
-  const normalized = normalizeCar(car);
-  return {
-    id: normalized.id,
-    user_id: userId,
-    vin: normalized.vin,
-    make: normalized.make.trim(),
-    model: normalized.model.trim(),
-    year: String(normalized.year || ''),
-    purchase_date: emptyToNull(normalized.purchaseDate),
-    purchase_price: toNumber(normalized.purchasePrice),
-    delivery_cost: toNumber(normalized.deliveryCost),
-    repair_cost: toNumber(normalized.repairCost),
-    parts_cost: toNumber(normalized.partsCost),
-    extra_expenses: toNumber(normalized.extraExpenses),
-    planned_sale_price: toNumber(normalized.plannedSalePrice),
-    actual_sale_price: toNumber(normalized.actualSalePrice),
-    sale_date: emptyToNull(normalized.saleDate),
-    buyer_contact: normalized.buyerContact,
-    notes: normalized.notes,
-    status: normalized.status,
-    photo: normalized.photo,
-    acquisition_type: normalized.acquisitionType,
-    exchange_payment_type: normalized.exchangePaymentType,
-    exchange_payment_amount: toNumber(normalized.exchangePaymentAmount),
-    exchange_comment: normalized.exchangeComment,
-    exchange_previous_car_id: emptyToNull(normalized.exchangePreviousCarId),
-    exchange_next_car_id: emptyToNull(normalized.exchangeNextCarId),
-    exchange_source_make: normalized.exchangeSourceMake,
-    exchange_source_model: normalized.exchangeSourceModel,
-    exchange_source_vin: normalized.exchangeSourceVin,
-  };
-}
-
-function toNumber(value) {
-  const normalized = Number(String(value || '').replace(/\s/g, '').replace(',', '.'));
-  return Number.isFinite(normalized) ? normalized : 0;
-}
-
-function calculateExchangePurchasePrice(sourceCar, paymentType, paymentAmount) {
-  const sourceCost = calculateTotals(sourceCar).totalCost;
-  if (paymentType === 'received') return Math.max(sourceCost - toNumber(paymentAmount), 0);
-  if (paymentType === 'paid') return sourceCost + toNumber(paymentAmount);
-  return sourceCost;
-}
-
-function calculateTotals(car) {
-  const totalCost =
-    toNumber(car.purchasePrice) +
-    toNumber(car.deliveryCost) +
-    toNumber(car.repairCost) +
-    toNumber(car.partsCost) +
-    toNumber(car.extraExpenses);
-  const actualSalePrice = toNumber(car.actualSalePrice ?? car.salePrice);
-  const hasActualSale = actualSalePrice > 0;
-  const isExchangeOut = car.status === 'exchanged' && car.exchangeNextCarId;
-  const netProfit = hasActualSale && !isExchangeOut ? actualSalePrice - totalCost : 0;
-  const roi = hasActualSale && totalCost > 0 ? (netProfit / totalCost) * 100 : 0;
-  return { totalCost, netProfit, roi, actualSalePrice, hasActualSale };
-}
-
-function formatMoney(value) {
-  return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(value)} ₽`;
-}
-
-function getCarTitle(car) {
-  return car ? `${car.make} ${car.model}${car.vin ? ` (${car.vin})` : ''}` : '—';
-}
-
-function getPaymentLabel(type, amount) {
-  const sum = toNumber(amount);
-  if (type === 'received') return `Мне доплатили${sum ? ` ${formatMoney(sum)}` : ''}`;
-  if (type === 'paid') return `Я доплатил${sum ? ` ${formatMoney(sum)}` : ''}`;
-  return 'Без доплаты';
-}
-
-function getExchangePaymentSummary(type, amount) {
-  const sum = toNumber(amount);
-  if (type === 'received') return `Доплата в мою сторону: ${formatMoney(sum)}`;
-  if (type === 'paid') return `Моя доплата: ${formatMoney(sum)}`;
-  return 'Обмен без доплаты';
-}
-
-function formatPercent(value) {
-  return `${new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 1 }).format(value)}%`;
-}
 
 function getErrorMessage(error, fallback) {
   console.error(fallback, error);
   return fallback;
 }
 
-function icon(symbol) {
-  return h('span', { className: 'icon', 'aria-hidden': 'true' }, symbol);
-}
 
-function downloadFile(content, fileName, type) {
-  const blob = new Blob([content], { type });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(url);
-}
 
-function createExcelRow(car) {
-  const { totalCost, netProfit, roi } = calculateTotals(car);
-  return {
-    vin: car.vin,
-    make: car.make,
-    model: car.model,
-    year: car.year,
-    purchaseDate: car.purchaseDate,
-    purchasePrice: toNumber(car.purchasePrice),
-    deliveryCost: toNumber(car.deliveryCost),
-    repairCost: toNumber(car.repairCost),
-    partsCost: toNumber(car.partsCost),
-    extraExpenses: toNumber(car.extraExpenses),
-    totalCost,
-    plannedSalePrice: toNumber(car.plannedSalePrice),
-    actualSalePrice: toNumber(car.actualSalePrice),
-    netProfit,
-    roi: Number(roi.toFixed(1)),
-    saleDate: car.saleDate,
-    buyerContact: car.buyerContact,
-    notes: car.notes,
-    status: statusLabels[car.status] || car.status,
-    photo: car.photo,
-    acquisitionType: car.acquisitionType === 'exchange' ? 'Обмен' : 'Покупка',
-    exchangePaymentType: getPaymentLabel(car.exchangePaymentType, car.exchangePaymentAmount),
-    exchangePaymentAmount: toNumber(car.exchangePaymentAmount),
-    exchangeComment: car.exchangeComment,
-    exchangePreviousCarId: car.exchangePreviousCarId,
-    exchangeNextCarId: car.exchangeNextCarId,
-    exchangeSourceMake: car.exchangeSourceMake,
-    exchangeSourceModel: car.exchangeSourceModel,
-    exchangeSourceVin: car.exchangeSourceVin,
-    previousCarTitle: car.exchangeSourceMake ? `${car.exchangeSourceMake} ${car.exchangeSourceModel} ${car.exchangeSourceVin}`.trim() : '',
-    nextCarTitle: car.exchangeNextCarId || '',
-  };
-}
 
-function getImportValue(row, key) {
-  const column = excelColumns.find((item) => item.key === key);
-  return row[column?.header] ?? row[key] ?? '';
-}
-
-function parseImportedCars(rows) {
-  const statusByLabel = {
-    ...Object.fromEntries(Object.entries(statusLabels).map(([value, label]) => [label, value])),
-    Продажа: 'sale',
-  };
-  const paymentTypeByLabel = {
-    'Получили доплату': 'received',
-    'Доплатили': 'paid',
-    'Без доплаты': 'none',
-    received: 'received',
-    paid: 'paid',
-    none: 'none',
-  };
-  return rows
-    .map((row) => normalizeCar({
-      id: row.id || crypto.randomUUID(),
-      vin: getImportValue(row, 'vin'),
-      make: getImportValue(row, 'make'),
-      model: getImportValue(row, 'model'),
-      year: getImportValue(row, 'year'),
-      purchaseDate: getImportValue(row, 'purchaseDate'),
-      purchasePrice: getImportValue(row, 'purchasePrice'),
-      deliveryCost: getImportValue(row, 'deliveryCost'),
-      repairCost: getImportValue(row, 'repairCost'),
-      partsCost: getImportValue(row, 'partsCost'),
-      extraExpenses: getImportValue(row, 'extraExpenses'),
-      plannedSalePrice: getImportValue(row, 'plannedSalePrice'),
-      actualSalePrice: getImportValue(row, 'actualSalePrice'),
-      saleDate: getImportValue(row, 'saleDate'),
-      buyerContact: getImportValue(row, 'buyerContact'),
-      notes: getImportValue(row, 'notes'),
-      status: statusByLabel[getImportValue(row, 'status')] || getImportValue(row, 'status') || 'bought',
-      photo: getImportValue(row, 'photo'),
-      acquisitionType: getImportValue(row, 'acquisitionType') === 'Обмен' || getImportValue(row, 'acquisitionType') === 'exchange' ? 'exchange' : 'purchase',
-      exchangePaymentType: paymentTypeByLabel[getImportValue(row, 'exchangePaymentType')] || 'none',
-      exchangePaymentAmount: getImportValue(row, 'exchangePaymentAmount'),
-      exchangeComment: getImportValue(row, 'exchangeComment'),
-      exchangePreviousCarId: getImportValue(row, 'exchangePreviousCarId'),
-      exchangeNextCarId: getImportValue(row, 'exchangeNextCarId'),
-      exchangeSourceMake: getImportValue(row, 'exchangeSourceMake'),
-      exchangeSourceModel: getImportValue(row, 'exchangeSourceModel'),
-      exchangeSourceVin: getImportValue(row, 'exchangeSourceVin'),
-    }))
-    .filter((car) => car.vin || car.make || car.model);
-}
-
-function readLegacyCars() {
-  if (typeof localStorage === 'undefined') return [];
-
-  try {
-    const savedCars = localStorage.getItem(STORAGE_KEY);
-    if (!savedCars) return [];
-    const parsedCars = JSON.parse(savedCars);
-    if (!Array.isArray(parsedCars)) return [];
-    return parsedCars
-      .map((car) => normalizeCar(car))
-      .filter((car) => car.vin || car.make || car.model);
-  } catch (error) {
-    console.warn('Не удалось прочитать автомобили из localStorage:', error);
-    return [];
-  }
-}
-
-function getMigrationKey(userId) {
-  return `${MIGRATION_KEY_PREFIX}:${userId}`;
-}
-
-async function migrateLegacyCars(userId) {
-  if (!supabase || typeof localStorage === 'undefined') return { migrated: false, count: 0 };
-
-  const migrationKey = getMigrationKey(userId);
-  if (localStorage.getItem(migrationKey)) return { migrated: false, count: 0 };
-
-  const legacyCars = readLegacyCars();
-  if (legacyCars.length === 0) {
-    localStorage.setItem(migrationKey, new Date().toISOString());
-    return { migrated: false, count: 0 };
-  }
-
-  const { error } = await supabase
-    .from('cars')
-    .upsert(legacyCars.map((car) => carToDb(car, userId)), { onConflict: 'id' });
-
-  if (error) throw error;
-
-  localStorage.setItem(migrationKey, new Date().toISOString());
-  localStorage.setItem(`${migrationKey}:count`, String(legacyCars.length));
-  return { migrated: true, count: legacyCars.length };
-}
 
 function App() {
   const [session, setSession] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [cars, setCars] = useState([]);
+  const [proLinks, setProLinks] = useState(null);
+  const [proWorkspace, setProWorkspace] = useState(() => new URLSearchParams(location.search).get('pro') === '1');
   const [carsLoading, setCarsLoading] = useState(false);
   const [savingCar, setSavingCar] = useState(false);
   const [editingCarId, setEditingCarId] = useState(null);
@@ -437,6 +96,11 @@ function App() {
   const [message, setMessage] = useState('');
   const [exchangeDraft, setExchangeDraft] = useState(null);
   const importInputRef = useRef(null);
+  const operationLock = useRef(createOperationLock()).current;
+  const loadRequestRef = useRef(0);
+  const loadingUserRef = useRef(null);
+  const activeUserRef = useRef(session?.user?.id ?? null);
+  const photoRequestRef = useRef(0);
 
   useEffect(() => {
     if (!supabase) {
@@ -445,12 +109,13 @@ function App() {
     }
 
     let mounted = true;
-    supabase.auth.getSession()
+    let authEventReceived = false;
+    let subscription;
+    Promise.resolve().then(() => authService.getSession())
       .then(({ data, error }) => {
-        if (!mounted) return;
-        if (error) {
-          setMessage(getErrorMessage(error, 'Не удалось проверить сессию. Попробуйте обновить страницу.'));
-        }
+        if (!mounted || authEventReceived) return;
+        if (error) throw error;
+        activeUserRef.current = data?.session?.user?.id ?? null;
         setSession(data?.session ?? null);
       })
       .catch((error) => {
@@ -460,74 +125,90 @@ function App() {
         if (mounted) setAuthLoading(false);
       });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-      if (!nextSession) setCars([]);
-    });
+    try {
+      ({ data: { subscription } } = authService.onAuthStateChange((_event, nextSession) => {
+        if (!mounted) return;
+        authEventReceived = true;
+        const nextUserId = nextSession?.user?.id ?? null;
+        if (activeUserRef.current !== nextUserId) {
+          loadRequestRef.current += 1;
+          loadingUserRef.current = null;
+          photoRequestRef.current += 1;
+          setCars([]);
+          setProLinks(null);
+          setForm(emptyForm);
+          setEditingCarId(null);
+          setExchangeDraft(null);
+          setCarsLoading(false);
+        }
+        activeUserRef.current = nextUserId;
+        setSession(nextSession);
+      }));
+    } catch (error) {
+      setMessage(getErrorMessage(error, 'Не удалось подписаться на изменения авторизации. Обновите страницу.'));
+    }
 
     return () => {
       mounted = false;
-      subscription.unsubscribe();
+      activeUserRef.current = null;
+      loadRequestRef.current += 1;
+      photoRequestRef.current += 1;
+      try { subscription?.unsubscribe(); } catch (error) { console.error('Не удалось отключить подписку авторизации.', error); }
     };
   }, []);
 
   const loadCars = async () => {
-    if (!supabase || !session?.user) return;
+    if (!supabase || !session?.user || loadingUserRef.current === session.user.id) return;
+    const userId = session.user.id;
+    const requestId = ++loadRequestRef.current;
+    loadingUserRef.current = userId;
     setCarsLoading(true);
     setMessage('');
 
     try {
-      const migration = await migrateLegacyCars(session.user.id);
-      const { data, error } = await supabase
-        .from('cars')
-        .select('*')
-        .order('created_at', { ascending: false });
+      const migration = productionProWrites ? null : await migrateLegacyCars(userId);
+      if (activeUserRef.current !== userId || requestId !== loadRequestRef.current) return;
+      const { data, error } = await carRepository.listCars();
 
       if (error) throw error;
+      if (activeUserRef.current !== userId || requestId !== loadRequestRef.current) return;
 
-      setCars((data ?? []).map(dbToCar));
-      if (migration.migrated) {
+      const nativeIds = await listNativeProIds(supabase, productionProWrites);
+      if (activeUserRef.current !== userId || requestId !== loadRequestRef.current) return;
+      setCars((data ?? []).filter(car => !nativeIds.has(car.id)).map(dbToCar));
+      try {
+        const links = await listProLinks(supabase);
+        if (activeUserRef.current === userId && requestId === loadRequestRef.current) setProLinks({ ...links, ownerId: userId });
+      } catch {
+        if (activeUserRef.current === userId && requestId === loadRequestRef.current) setProLinks({ ownerId: userId, error: true });
+      }
+      if (migration?.migrated) {
         setMessage(`Перенесено из localStorage в Supabase: ${migration.count} авто.`);
       }
     } catch (error) {
-      setMessage(getErrorMessage(error, 'Не удалось загрузить автомобили из Supabase.'));
+      if (activeUserRef.current === userId && requestId === loadRequestRef.current) {
+        setMessage(getErrorMessage(error, 'Не удалось загрузить автомобили из Supabase.'));
+      }
     } finally {
-      setCarsLoading(false);
+      if (requestId === loadRequestRef.current) {
+        loadingUserRef.current = null;
+        setCarsLoading(false);
+      }
     }
   };
 
   useEffect(() => {
-    if (session?.user) loadCars();
+    if (!localProCheck && session?.user) loadCars();
   }, [session?.user?.id]);
 
-  const filteredCars = useMemo(() => {
-    const vinQuery = searchVin.trim().toLowerCase();
-    return cars.filter((car) => {
-      const matchesVin = car.vin.toLowerCase().includes(vinQuery);
-      const matchesStatus = statusFilter === 'all' || car.status === statusFilter;
-      return matchesVin && matchesStatus;
-    });
-  }, [cars, searchVin, statusFilter]);
+  const filteredCars = useMemo(() => filterCars(cars, searchVin, statusFilter), [cars, searchVin, statusFilter]);
 
-  const stats = useMemo(() => cars.reduce(
-    (acc, car) => {
-      const { totalCost, netProfit, hasActualSale } = calculateTotals(car);
-      const isTransferredByExchange = car.status === 'exchanged' && car.exchangeNextCarId;
-      if (!isTransferredByExchange) {
-        acc.totalInvestment += totalCost;
-        acc.totalProfit += netProfit;
-        acc.profitableDeals += hasActualSale ? 1 : 0;
-      }
-      acc.sold += car.status === 'sold' ? 1 : 0;
-      acc.active += ['sold', 'exchanged'].includes(car.status) ? 0 : 1;
-      acc.exchanged += car.status === 'exchanged' ? 1 : 0;
-      return acc;
-    },
-    { totalInvestment: 0, totalProfit: 0, sold: 0, active: 0, exchanged: 0, profitableDeals: 0 },
-  ), [cars]);
+  const currentLinks = proLinks?.ownerId === session?.user?.id ? proLinks : null;
+  const linkedIds = currentLinks?.ids;
+  const stats = useMemo(() => calculateStats(linkedIds ? cars.filter(car => !linkedIds.has(car.id)) : []), [cars, linkedIds]);
+  const legacyWriteBlocked = id => Boolean(id && (!linkedIds || linkedIds.has(id)));
 
-  const averageProfit = stats.profitableDeals > 0 ? stats.totalProfit / stats.profitableDeals : 0;
-  const roi = stats.totalInvestment > 0 ? (stats.totalProfit / stats.totalInvestment) * 100 : 0;
+  const { averageProfit, roi } = calculateSummary(stats);
   const carById = useMemo(() => Object.fromEntries(cars.map((car) => [car.id, car])), [cars]);
 
   const handleChange = (event) => {
@@ -544,6 +225,8 @@ function App() {
   };
 
   const startEditing = (car) => {
+    if (legacyWriteBlocked(car.id) || operationLock.isBusy() || loadingUserRef.current) return;
+    photoRequestRef.current += 1;
     setEditingCarId(car.id);
     setForm(normalizeCar(car));
     setMessage(`Редактирование: ${car.make} ${car.model}.`);
@@ -551,12 +234,15 @@ function App() {
   };
 
   const cancelEditing = () => {
+    if (operationLock.isBusy()) return;
+    photoRequestRef.current += 1;
     setEditingCarId(null);
     setForm(emptyForm);
     setMessage('');
   };
 
   const startExchange = (car) => {
+    if (productionProWrites || legacyWriteBlocked(car.id) || operationLock.isBusy() || loadingUserRef.current) return;
     setExchangeDraft({
       sourceCarId: car.id,
       paymentType: 'none',
@@ -581,9 +267,11 @@ function App() {
   };
 
   const confirmExchange = () => {
+    if (operationLock.isBusy() || loadingUserRef.current) return;
     const sourceCar = carById[exchangeDraft?.sourceCarId];
-    if (!sourceCar) return;
+    if (!sourceCar || legacyWriteBlocked(sourceCar.id)) return;
     const purchasePrice = calculateExchangePurchasePrice(sourceCar, exchangeDraft.paymentType, exchangeDraft.paymentAmount);
+    photoRequestRef.current += 1;
     setEditingCarId(null);
     setForm(normalizeCar({
       ...emptyForm,
@@ -607,173 +295,200 @@ function App() {
 
   const handlePhotoUpload = (event) => {
     const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = () => setForm((current) => ({ ...current, photo: String(reader.result) }));
-    reader.readAsDataURL(file);
+    if (!file || operationLock.isBusy()) return;
+    const requestId = ++photoRequestRef.current;
+    const userId = session?.user?.id;
+    const isCurrent = () => requestId === photoRequestRef.current && activeUserRef.current === userId;
+    try {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (isCurrent()) setForm((current) => ({ ...current, photo: String(reader.result) }));
+      };
+      reader.onerror = () => {
+        if (isCurrent()) setMessage('Не удалось прочитать фотографию. Выберите файл повторно.');
+      };
+      reader.onabort = () => {
+        if (isCurrent()) setMessage('Чтение фотографии прервано. Выберите файл повторно.');
+      };
+      reader.readAsDataURL(file);
+    } catch (error) {
+      setMessage(getErrorMessage(error, 'Не удалось открыть фотографию. Выберите другой файл.'));
+    }
   };
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+    if (productionProWrites && !editingCarId) return;
+    if (legacyWriteBlocked(editingCarId) || legacyWriteBlocked(form.exchangePreviousCarId)) {
+      setMessage('Запись через прежний учёт для этой карточки недоступна.');
+      return;
+    }
     if (!form.vin.trim() || !form.make.trim() || !form.model.trim() || !session?.user) return;
-
-    if (savingCar) return;
-
-    const exchangeSourceCar = !editingCarId && form.acquisitionType === 'exchange' ? carById[form.exchangePreviousCarId] : null;
-    const calculatedExchangePrice = exchangeSourceCar
-      ? calculateExchangePurchasePrice(exchangeSourceCar, form.exchangePaymentType, form.exchangePaymentAmount)
-      : form.purchasePrice;
-    const nextCar = normalizeCar({
-      ...form,
-      id: editingCarId || form.id || crypto.randomUUID(),
-      vin: form.vin.trim().toUpperCase(),
-      purchasePrice: calculatedExchangePrice,
-    });
+    if (loadingUserRef.current || !operationLock.acquire()) return;
+    const userId = session.user.id;
+    let createdExchangeCar = null;
     setSavingCar(true);
     setMessage('');
 
     try {
-      const request = editingCarId
-        ? supabase.from('cars').update(carToDb(nextCar, session.user.id)).eq('id', editingCarId)
-        : supabase.from('cars').insert(carToDb(nextCar, session.user.id));
-      const { data, error } = await request.select('*').single();
+      const { nextCar, exchangeSourceCar } = prepareCarSave(form, editingCarId, carById);
+      // Keep the UUID on an uncertain network result: a retry cannot insert a second UUID.
+      if (!editingCarId) setForm((current) => ({ ...current, id: nextCar.id }));
+      const { data, error } = await carRepository.saveCar(nextCar, userId, editingCarId);
 
       if (error) throw error;
+      if (activeUserRef.current !== userId) return;
       let savedCar = dbToCar(data);
       let savedSourceCar = null;
       const sourceCar = !editingCarId && savedCar.acquisitionType === 'exchange' ? exchangeSourceCar : null;
       if (sourceCar) {
-        const linkedSource = normalizeCar({
-          ...sourceCar,
-          status: 'exchanged',
-          exchangeNextCarId: savedCar.id,
-          exchangePaymentType: savedCar.exchangePaymentType,
-          exchangePaymentAmount: savedCar.exchangePaymentAmount,
-          exchangeComment: savedCar.exchangeComment,
-        });
-        const { data: sourceData, error: sourceError } = await supabase
-          .from('cars')
-          .update(carToDb(linkedSource, session.user.id))
-          .eq('id', sourceCar.id)
-          .select('*')
-          .single();
+        createdExchangeCar = savedCar;
+        const linkedSource = linkExchangeSource(sourceCar, savedCar);
+        const { data: sourceData, error: sourceError } = await carRepository.saveCar(linkedSource, userId, sourceCar.id);
         if (sourceError) throw sourceError;
+        if (activeUserRef.current !== userId) return;
         savedSourceCar = dbToCar(sourceData);
       }
-      setCars((current) => {
-        const withSaved = editingCarId
-          ? current.map((car) => (car.id === savedCar.id ? savedCar : car))
-          : [savedCar, ...current];
-        return savedSourceCar ? withSaved.map((car) => (car.id === savedSourceCar.id ? savedSourceCar : car)) : withSaved;
-      });
+      setCars((current) => applySavedCar(current, savedCar, savedSourceCar, editingCarId));
+      photoRequestRef.current += 1;
       setForm(emptyForm);
       setEditingCarId(null);
       setMessage(editingCarId ? 'Изменения автомобиля сохранены.' : savedSourceCar ? 'Обмен оформлен через полную карточку автомобиля.' : 'Автомобиль добавлен в учет.');
     } catch (error) {
-      setMessage(getErrorMessage(error, 'Не удалось сохранить автомобиль. Проверьте данные и повторите попытку.'));
+      if (activeUserRef.current === userId) {
+        if (createdExchangeCar) {
+          setCars((current) => [createdExchangeCar, ...current.filter((car) => car.id !== createdExchangeCar.id)]);
+          photoRequestRef.current += 1;
+          setForm(emptyForm);
+          setEditingCarId(null);
+        }
+        setMessage(getErrorMessage(error, createdExchangeCar
+          ? 'Полученный автомобиль сохранён, но завершение обмена не подтверждено. Не создавайте его повторно; обновите страницу и проверьте обе карточки.'
+          : 'Не удалось подтвердить сохранение автомобиля. При ошибке связи проверьте список перед повторной попыткой.'));
+      }
     } finally {
       setSavingCar(false);
+      operationLock.release();
+    }
+  };
+
+  const saveProNotes = async (id, notes) => {
+    const userId = session?.user?.id;
+    if (!userId || !linkedIds?.has(id) || typeof notes !== 'string' || !operationLock.acquire()) return;
+    setSavingCar(true);
+    setMessage('');
+    try {
+      const { data, error } = await carRepository.saveNotes(id, userId, notes);
+      if (error) throw error;
+      if (data?.id !== id) throw Error('Unexpected note response');
+      if (activeUserRef.current !== userId) return;
+      setCars(current => current.map(car => car.id === id ? { ...car, notes: data.notes ?? '' } : car));
+      setMessage('Заметка сохранена.');
+    } catch (error) {
+      if (activeUserRef.current === userId) setMessage(getErrorMessage(error, 'Не удалось сохранить заметку.'));
+    } finally {
+      setSavingCar(false);
+      operationLock.release();
     }
   };
 
   const removeCar = async (id) => {
-    if (deletingCarId || !window.confirm('Удалить автомобиль и связанные с ним данные? Это действие нельзя отменить.')) return;
-
-    setDeletingCarId(id);
-    setMessage('');
+    if (legacyWriteBlocked(id) || !session?.user || loadingUserRef.current || !operationLock.acquire()) return;
+    const userId = session.user.id;
     try {
-      const { error } = await supabase.from('cars').delete().eq('id', id);
+      if (!window.confirm('Удалить автомобиль? Связанные расходы, заметки и продажи будут удалены, а ссылки обменов — разорваны. Это действие нельзя отменить.')) return;
+      setDeletingCarId(id);
+      setMessage('');
+      const { error } = await carRepository.deleteCar(id);
       if (error) throw error;
+      if (activeUserRef.current !== userId) return;
       setCars((current) => current.filter((car) => car.id !== id));
     } catch (error) {
-      setMessage(getErrorMessage(error, 'Не удалось удалить автомобиль. Повторите попытку.'));
+      if (activeUserRef.current === userId) setMessage(getErrorMessage(error, 'Не удалось подтвердить удаление автомобиля. Обновите список перед повторной попыткой.'));
     } finally {
       setDeletingCarId(null);
+      operationLock.release();
     }
   };
 
-  const exportToExcel = () => {
-    const rows = cars.map(createExcelRow).map((row) => Object.fromEntries(
-      excelColumns.map((column) => [column.header, row[column.key]]),
-    ));
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    worksheet['!cols'] = excelColumns.map((column) => ({ wch: column.key === 'notes' || column.key === 'photo' ? 34 : 18 }));
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Автомобили');
-    XLSX.writeFile(workbook, 'car-flip-manager.xlsx');
+  const exportToExcel = async () => {
+    if (!operationLock.acquire()) return;
+    try {
+      await fileTransfers.exportToExcel(cars);
+    } catch (error) {
+      setMessage(getErrorMessage(error, 'Не удалось экспортировать Excel. Данные в базе не изменены.'));
+    } finally {
+      operationLock.release();
+    }
   };
 
   const backupToJson = () => {
-    downloadFile(
-      JSON.stringify({ exportedAt: new Date().toISOString(), user: session?.user?.email, cars }, null, 2),
-      'car-flip-manager-backup.json',
-      'application/json;charset=utf-8',
-    );
+    if (!operationLock.acquire()) return;
+    try {
+      fileTransfers.backupToJson(cars, session?.user?.email);
+    } catch (error) {
+      setMessage(getErrorMessage(error, 'Не удалось создать JSON-файл. Данные в базе не изменены.'));
+    } finally {
+      operationLock.release();
+    }
   };
 
   const handleExcelImport = async (event) => {
     const input = event.currentTarget;
+    if (productionProWrites) return;
     const file = input.files?.[0];
-    if (!file || !session?.user || importingCars) return;
-    if (!window.confirm('Импорт заменит текущий список автомобилей. Продолжить?')) {
-      input.value = '';
-      return;
-    }
-
-    setImportingCars(true);
-    setMessage('');
+    if (!file || !session?.user || loadingUserRef.current || !operationLock.acquire()) return;
+    const userId = session.user.id;
     try {
+      if (!window.confirm('Добавить автомобили из Excel? Существующие автомобили, расходы, продажи и связи не изменятся. Повторный импорт того же файла добавит ещё один набор автомобилей.')) return;
+      setImportingCars(true);
+      setMessage('');
       const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: 'array' });
-      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-      if (!worksheet) throw new Error('В книге Excel не найден лист с данными.');
-
-      const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
-      const importedCars = parseImportedCars(rows).map((car) => ({ ...car, id: crypto.randomUUID() }));
-      if (importedCars.length === 0) throw new Error('В файле не найдено автомобилей для импорта.');
-
-      // Insert the replacement set first. Existing data is deleted only after the insert succeeds.
-      const { data, error: insertError } = await supabase
-        .from('cars')
-        .insert(importedCars.map((car) => carToDb(car, session.user.id)))
-        .select('*')
-        .order('created_at', { ascending: false });
-      if (insertError) throw insertError;
-
-      const previousIds = cars.map((car) => car.id);
-      if (previousIds.length > 0) {
-        const { error: deleteError } = await supabase.from('cars').delete().in('id', previousIds);
-        if (deleteError) {
-          setCars([...(data ?? []).map(dbToCar), ...cars]);
-          throw new Error('Новые данные импортированы, но прежние записи не удалены. Удалите дубликаты вручную.', { cause: deleteError });
-        }
-      }
-
-      setCars((data ?? []).map(dbToCar));
-      setMessage(`Импортировано автомобилей: ${importedCars.length}.`);
+      const importedCars = fileTransfers.readExcelCars(buffer);
+      if (activeUserRef.current !== userId) return;
+      const data = await carRepository.appendCars(importedCars, userId);
+      if (activeUserRef.current !== userId) return;
+      const added = data.map(dbToCar);
+      setCars((current) => [...added, ...current]);
+      setMessage(`Добавлено автомобилей: ${added.length}. Существующие данные сохранены.`);
     } catch (error) {
-      setMessage(getErrorMessage(error, error?.message?.startsWith('Новые данные импортированы')
-        ? error.message
-        : 'Не удалось импортировать Excel. Прежние данные сохранены.'));
+      if (activeUserRef.current === userId) {
+        setMessage(getErrorMessage(error, error instanceof ImportValidationError
+          ? error.message
+          : 'Не удалось подтвердить импорт Excel. Существующие данные не изменены. При ошибке связи обновите страницу и проверьте, добавились ли автомобили, прежде чем повторять импорт.'));
+      }
     } finally {
       setImportingCars(false);
       input.value = '';
+      operationLock.release();
     }
   };
 
   const signOut = async () => {
-    if (signingOut) return;
+    if (!operationLock.acquire()) return;
     setSigningOut(true);
     setMessage('');
     try {
-      const { error } = await supabase.auth.signOut();
+      const { error } = localProCheck
+        ? await authService.signOut({ scope: 'local' })
+        : await authService.signOut();
       if (error) throw error;
     } catch (error) {
-      setMessage(getErrorMessage(error, 'Не удалось выйти из аккаунта. Повторите попытку.'));
+      const fallback = 'Не удалось выйти из аккаунта. Повторите попытку.';
+      setMessage(localProCheck ? fallback : getErrorMessage(error, fallback));
     } finally {
       setSigningOut(false);
+      operationLock.release();
     }
+  };
+
+  const mutationBusy = savingCar || importingCars || Boolean(deletingCarId) || signingOut;
+  const openProWorkspace = () => {
+    const url = new URL(location.href);
+    url.searchParams.set('pro', '1');
+    history.replaceState(null, '', url);
+    setProWorkspace(true);
+    window.scrollTo(0, 0);
   };
 
   if (!isSupabaseConfigured) {
@@ -785,7 +500,22 @@ function App() {
   }
 
   if (!session?.user) {
-    return h(AuthScreen, { onMessage: setMessage, message });
+    return h(AuthScreen, { onMessage: setMessage, message, signInOnly: localProCheck });
+  }
+
+  if (localProCheck) {
+    return h(LocalProCheck, { key: session.user.id, userId: session.user.id, signOut, signingOut, message });
+  }
+
+  if (productionProWrites && proWorkspace) {
+    return h(ProWorkspace,{key:session.user.id,activeSession:session,request:productionProRequest,onBack:()=>{
+      const url = new URL(location.href);
+      url.searchParams.delete('pro');
+      url.searchParams.delete('car_id');
+      history.replaceState(null,'',url);
+      setProWorkspace(false);
+      loadCars();
+    }});
   }
 
   return h('main', { className: 'app-shell' },
@@ -794,32 +524,39 @@ function App() {
         h('p', { className: 'eyebrow' }, 'Car Flip Manager'),
         h('h1', null, 'Учет автомобилей в перепродаже'),
         h('p', { className: 'hero-text' }, 'Контролируйте закупки, ремонт, вложения и прибыль по каждой сделке в одном темном интерфейсе.'),
-        h('div', { className: 'session-row' }, h('span', null, session.user.email), h('button', { className: 'secondary-button', type: 'button', disabled: signingOut, onClick: signOut }, signingOut ? 'Выходим...' : 'Выйти')),
+        h('div', { className: 'session-row' }, h('span', null, session.user.email), h('button', { className: 'secondary-button', type: 'button', disabled: mutationBusy, onClick: signOut }, signingOut ? 'Выходим...' : 'Выйти'),
+          productionProWrites && h('button',{className:'secondary-button',type:'button',disabled:mutationBusy,
+            onClick:openProWorkspace},'Финансовый учёт Pro')),
       ),
       h('div', { className: 'hero-card' }, icon('🚘'), h('span', null, 'Всего авто'), h('strong', null, cars.length)),
     ),
     message ? h('p', { className: 'app-message' }, message) : null,
-    h('section', { className: 'stats-grid', 'aria-label': 'Панель статистики' },
+    currentLinks?.enabled ? h('p', {className:'notes'}, 'Сводка прежнего учёта. Суммы по перенесённым автомобилям доступны в карточках Pro.') : null,
+    linkedIds ? h('section', { className: 'stats-grid', 'aria-label': 'Панель статистики' },
       h(StatCard, { icon: '💵', label: 'Общие вложения', value: formatMoney(stats.totalInvestment) }),
       h(StatCard, { icon: '📈', label: 'Общая прибыль', value: formatMoney(stats.totalProfit), positive: stats.totalProfit >= 0 }),
       h(StatCard, { icon: '⚖️', label: 'Средняя прибыль на автомобиль', value: formatMoney(averageProfit), positive: averageProfit >= 0 }),
       h(StatCard, { icon: '📊', label: 'Рентабельность', value: formatPercent(roi), positive: roi >= 0 }),
       h(StatCard, { icon: '✅', label: 'Продано', value: stats.sold }),
-    ),
+    ) : null,
     exchangeDraft ? h(ExchangeDialog, { draft: exchangeDraft, sourceCar: carById[exchangeDraft.sourceCarId], onChange: updateExchangeDraft, onCancel: cancelExchange, onConfirm: confirmExchange }) : null,
     h('section', { className: 'workspace' },
-      h('form', { className: 'panel form-panel', onSubmit: handleSubmit },
+      productionProWrites && !editingCarId ? h('section', { className: 'panel form-panel' },
+        h('div', { className: 'panel-title' }, icon('➕'), h('h2', null, 'Добавить автомобиль')),
+        h('button', { className: 'primary-button', type: 'button', disabled: mutationBusy, onClick: openProWorkspace },
+          'Добавить автомобиль в Pro'),
+      ) : h('form', { className: 'panel form-panel', onSubmit: handleSubmit },
         h('div', { className: 'panel-title' }, icon(editingCarId ? '✏️' : '➕'), h('h2', null, editingCarId ? 'Редактировать автомобиль' : 'Добавить автомобиль')),
         h('div', { className: 'photo-upload' },
           h('div', { className: 'photo-preview' }, form.photo ? h('img', { src: form.photo, alt: 'Предпросмотр автомобиля' }) : icon('📷')),
-          h('label', { className: 'upload-button' }, 'Фото автомобиля', h('input', { type: 'file', accept: 'image/*', onChange: handlePhotoUpload })),
+          h('label', { className: 'upload-button' }, 'Фото автомобиля', h('input', { type: 'file', accept: 'image/*', disabled: mutationBusy, onChange: handlePhotoUpload })),
         ),
         h('div', { className: 'form-grid' },
           h(Input, { label: 'VIN', name: 'vin', value: form.vin, onChange: handleChange, required: true }),
           h(SearchSelect, { label: 'Марка', name: 'make', value: form.make, options: makeOptions, onChange: handleChange, required: true, placeholder: 'Начните вводить марку' }),
           h(SearchSelect, { label: 'Модель', name: 'model', value: form.model, options: getModelOptions(form.make), onChange: handleChange, required: true, disabled: !form.make, placeholder: form.make ? 'Начните вводить модель' : 'Сначала выберите марку' }),
           h(Input, { label: 'Год', name: 'year', value: form.year, onChange: handleChange, type: 'number', min: '1900' }),
-          h(QuickDateInput, { label: 'Дата покупки', name: 'purchaseDate', value: form.purchaseDate, onChange: handleChange }),
+          h(QuickDateInput, { key: `purchase-${editingCarId || form.id || 'new'}`, label: 'Дата покупки', name: 'purchaseDate', value: form.purchaseDate, onChange: handleChange }),
           h(MoneyInput, { label: 'Покупка, ₽', name: 'purchasePrice', value: form.purchasePrice, onChange: handleChange }),
           h(MoneyInput, { label: 'Доставка, ₽', name: 'deliveryCost', value: form.deliveryCost, onChange: handleChange }),
           h(MoneyInput, { label: 'Ремонт, ₽', name: 'repairCost', value: form.repairCost, onChange: handleChange }),
@@ -827,7 +564,7 @@ function App() {
           h(MoneyInput, { label: 'Доп. расходы, ₽', name: 'extraExpenses', value: form.extraExpenses, onChange: handleChange }),
           h(MoneyInput, { label: 'Планируемая цена продажи', name: 'plannedSalePrice', value: form.plannedSalePrice, onChange: handleChange }),
           h(MoneyInput, { label: 'Фактическая цена продажи', name: 'actualSalePrice', value: form.actualSalePrice, onChange: handleChange }),
-          h(QuickDateInput, { label: 'Дата продажи', name: 'saleDate', value: form.saleDate, onChange: handleChange }),
+          h(QuickDateInput, { key: `sale-${editingCarId || form.id || 'new'}`, label: 'Дата продажи', name: 'saleDate', value: form.saleDate, onChange: handleChange }),
           h(Input, { label: 'Контакт покупателя', name: 'buyerContact', value: form.buyerContact, onChange: handleChange, placeholder: 'Телефон, мессенджер или имя' }),
           h('label', null,
             h('span', null, 'Статус'),
@@ -841,8 +578,8 @@ function App() {
           ),
         ),
         h('div', { className: 'form-actions' },
-          h('button', { className: 'primary-button', type: 'submit', disabled: savingCar }, savingCar ? 'Сохраняем...' : editingCarId ? 'Сохранить изменения' : 'Добавить в учет'),
-          editingCarId ? h('button', { className: 'secondary-button', type: 'button', disabled: savingCar, onClick: cancelEditing }, 'Отмена') : null,
+          h('button', { className: 'primary-button', type: 'submit', disabled: mutationBusy || carsLoading }, savingCar ? 'Сохраняем...' : editingCarId ? 'Сохранить изменения' : 'Добавить в учет'),
+          editingCarId ? h('button', { className: 'secondary-button', type: 'button', disabled: mutationBusy, onClick: cancelEditing }, 'Отмена') : null,
         ),
       ),
       h('section', { className: 'panel list-panel' },
@@ -851,10 +588,10 @@ function App() {
           h('span', null, carsLoading ? 'Загрузка...' : `${filteredCars.length} найдено`),
         ),
         h('div', { className: 'actions-row' },
-          h('button', { className: 'secondary-button', type: 'button', disabled: importingCars, onClick: exportToExcel }, 'Экспорт в Excel'),
-          h('button', { className: 'secondary-button', type: 'button', disabled: importingCars, onClick: () => importInputRef.current?.click() }, importingCars ? 'Импортируем...' : 'Импорт из Excel'),
-          h('button', { className: 'secondary-button', type: 'button', disabled: importingCars, onClick: backupToJson }, 'Резервная копия JSON'),
-          h('input', { ref: importInputRef, className: 'hidden-input', type: 'file', accept: '.xlsx,.xls', onChange: handleExcelImport }),
+          h('button', { className: 'secondary-button', type: 'button', disabled: mutationBusy || carsLoading, onClick: exportToExcel }, 'Экспорт в Excel'),
+          !productionProWrites && h('button', { className: 'secondary-button', type: 'button', disabled: mutationBusy || carsLoading, onClick: () => importInputRef.current?.click() }, importingCars ? 'Импортируем...' : 'Добавить из Excel'),
+          h('button', { className: 'secondary-button', type: 'button', disabled: mutationBusy || carsLoading, onClick: backupToJson }, 'Резервная копия JSON'),
+          h('input', { ref: importInputRef, className: 'hidden-input', type: 'file', accept: '.xlsx,.xls', disabled: mutationBusy || carsLoading, onChange: handleExcelImport }),
         ),
         h('div', { className: 'toolbar' },
           h('label', { className: 'search-field' },
@@ -871,7 +608,15 @@ function App() {
           ),
         ),
         h('div', { className: 'car-list' },
-          filteredCars.map((car) => h(CarCard, { car, key: car.id, carById, onEdit: startEditing, onExchange: startExchange, onRemove: removeCar, deleting: deletingCarId === car.id, busy: savingCar || importingCars })),
+          filteredCars.map(car => {
+            const proLinked = linkedIds?.has(car.id) === true;
+            let status = 'loading';
+            if (currentLinks?.error) status = 'error';
+            else if (currentLinks) status = proLinked ? 'linked' : currentLinks.enabled ? 'unlinked' : 'unavailable';
+            return h(CarCard, { car, key: car.id, carById, onEdit: startEditing, onExchange: productionProWrites ? null : startExchange,
+              onRemove: removeCar, onSaveNotes: saveProNotes, deleting: deletingCarId === car.id, busy: mutationBusy || carsLoading || !linkedIds, proLinked,
+              financialPro: h(ProductionFinancialPro, { client: supabase, ownerId: session.user.id, carId: car.id, status }) });
+          }),
           filteredCars.length === 0 ? h('p', { className: 'empty-state' }, carsLoading ? 'Загружаем автомобили из Supabase...' : 'Автомобили не найдены. Измените поиск или фильтр.') : null,
         ),
       ),
@@ -879,31 +624,85 @@ function App() {
   );
 }
 
-function AuthScreen({ message, onMessage }) {
+function LocalProCheck({ userId, signOut, signingOut, message }) {
+  const [checking, setChecking] = useState(false);
+  const [result, setResult] = useState(null);
+
+  async function check() {
+    setChecking(true);
+    setResult(null);
+    try {
+      const { data, error } = await authService.getSession();
+      if (error || data?.session?.user?.id !== userId || !data.session.access_token) {
+        setResult({ error: 'Сессия недоступна. Выйдите и войдите повторно.' });
+        return;
+      }
+      const response = await fetch('/__local/pro-check', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${data.session.access_token}` },
+        redirect: 'error',
+        cache: 'no-store',
+      });
+      setResult(await response.json());
+    } catch {
+      setResult({ error: 'Локальная проверка недоступна. Откройте адрес, указанный при запуске сервера.' });
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  return h('main', { className: 'app-shell' },
+    h('section', { className: 'panel' },
+      h('h1', null, 'Car Flip Manager Pro'),
+      h('p', null, `Supabase ${authProject} · Вход выполнен`),
+      h('div', { className: 'session-row' },
+        h('button', { className: 'primary-button', type: 'button', disabled: checking || signingOut, onClick: check },
+          checking ? 'Проверяем…' : 'Проверить подключение Pro'),
+        h('button', { className: 'secondary-button', type: 'button', disabled: checking || signingOut, onClick: signOut },
+          signingOut ? 'Выходим…' : 'Выйти'),
+      ),
+      message && h('p', { className: 'app-message', role: 'alert' }, message),
+      h('div', { role: 'status', 'aria-live': 'polite' },
+        result && h('dl', null,
+          h('dt', null, 'HTTP-статус writer'), h('dd', null, result.httpStatus ?? 'Нет ответа'),
+          h('dt', null, 'Подключение к PostgreSQL'), h('dd', null, result.databaseConnected ? 'Подтверждено' : 'Не подтверждено'),
+          h('dt', null, 'Доступно автомобилей Pro'), h('dd', null, result.carCount ?? '—'),
+        ),
+        result?.error && h('p', { className: 'app-message' }, result.error),
+      ),
+    ),
+  );
+}
+
+function AuthScreen({ message, onMessage, signInOnly }) {
   const [mode, setMode] = useState('signin');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const authLock = useRef(createOperationLock()).current;
 
   const submitAuth = async (event) => {
     event.preventDefault();
+    if (!authLock.acquire()) return;
     setLoading(true);
     onMessage('');
 
     try {
       const authRequest = mode === 'signup'
-        ? supabase.auth.signUp({ email, password })
-        : supabase.auth.signInWithPassword({ email, password });
+        ? authService.signUp({ email, password })
+        : authService.signInWithPassword({ email, password });
       const { data, error } = await authRequest;
 
       if (error) throw error;
       if (mode === 'signup' && !data?.session) onMessage('Регистрация создана. Проверьте email и подтвердите адрес перед входом.');
     } catch (error) {
-      onMessage(getErrorMessage(error, mode === 'signup'
+      const fallback = mode === 'signup'
         ? 'Не удалось зарегистрироваться. Проверьте данные и повторите попытку.'
-        : 'Не удалось войти. Проверьте email и пароль.'));
+        : 'Не удалось войти. Проверьте email и пароль.';
+      onMessage(signInOnly ? fallback : getErrorMessage(error, fallback));
     } finally {
       setLoading(false);
+      authLock.release();
     }
   };
 
@@ -918,16 +717,17 @@ function AuthScreen({ message, onMessage }) {
     ),
     h('form', { className: 'panel auth-panel', onSubmit: submitAuth },
       h('div', { className: 'panel-title' }, icon(mode === 'signup' ? '📝' : '🔑'), h('h2', null, mode === 'signup' ? 'Регистрация' : 'Вход')),
+      signInOnly && h('p', null, `Supabase ${authProject} · Вход не выполнен`),
       message ? h('p', { className: 'app-message' }, message) : null,
       h(Input, { label: 'Email', type: 'email', value: email, onChange: (event) => setEmail(event.target.value), required: true, placeholder: 'you@example.com' }),
       h(Input, { label: 'Пароль', type: 'password', value: password, onChange: (event) => setPassword(event.target.value), required: true, minLength: 6, placeholder: 'Минимум 6 символов' }),
       h('button', { className: 'primary-button', type: 'submit', disabled: loading }, loading ? 'Отправляем...' : mode === 'signup' ? 'Зарегистрироваться' : 'Войти'),
-      h('button', {
+      !signInOnly && h('button', {
         className: 'auth-switch',
         type: 'button',
         disabled: loading,
         onClick: () => {
-          if (loading) return;
+          if (authLock.isBusy()) return;
           onMessage('');
           setMode(mode === 'signup' ? 'signin' : 'signup');
         },
@@ -945,17 +745,6 @@ function ConfigNotice() {
   );
 }
 
-function StatCard({ icon: iconSymbol, label, value, positive = true }) {
-  return h('article', { className: 'stat-card' },
-    h('div', { className: 'stat-icon' }, icon(iconSymbol)),
-    h('span', null, label),
-    h('strong', { className: positive ? 'positive' : 'negative' }, value),
-  );
-}
-
-function Input({ label, ...props }) {
-  return h('label', null, h('span', null, label), h('input', props));
-}
 
 function MoneyInput({ label, value, ...props }) {
   const numericValue = toNumber(value);
@@ -980,21 +769,40 @@ function SearchSelect({ label, options, ...props }) {
 }
 
 function QuickDateInput({ label, name, value, onChange }) {
-  const [year = '', month = '', day = ''] = String(value || '').split('-');
+  const split = (date) => {
+    const [year = '', month = '', day = ''] = String(date || '').split('-');
+    return { year, month, day };
+  };
+  const [parts, setParts] = useState(() => split(value));
+  const lastEmitted = useRef(String(value || ''));
+  useEffect(() => {
+    const nextValue = String(value || '');
+    if (nextValue !== lastEmitted.current) {
+      lastEmitted.current = nextValue;
+      setParts(split(nextValue));
+    }
+  }, [value]);
+  const { year, month, day } = parts;
   const currentYear = new Date().getFullYear();
   const emit = (nextYear, nextMonth, nextDay) => {
-    const nextValue = nextYear && nextMonth && nextDay ? `${nextYear}-${nextMonth}-${nextDay}` : '';
+    const maxDays = nextMonth ? new Date(Number(nextYear || 2000), Number(nextMonth), 0).getDate() : 31;
+    const validDay = Number(nextDay) > maxDays ? '' : nextDay;
+    const nextValue = nextYear && nextMonth && validDay ? `${nextYear}-${nextMonth}-${validDay}` : '';
+    lastEmitted.current = nextValue;
+    setParts({ year: nextYear, month: nextMonth, day: validDay });
     onChange({ target: { name, value: nextValue } });
   };
-  const years = Array.from({ length: 41 }, (_, index) => String(currentYear + 1 - index));
+  const years = Array.from(new Set([...(year ? [year] : []), ...Array.from({ length: 41 }, (_, index) => String(currentYear + 1 - index))])).sort((a, b) => Number(b) - Number(a));
   const months = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, '0'));
-  const days = Array.from({ length: 31 }, (_, index) => String(index + 1).padStart(2, '0'));
-  return h('label', null,
+  const maxDays = month ? new Date(Number(year || 2000), Number(month), 0).getDate() : 31;
+  const days = Array.from({ length: maxDays }, (_, index) => String(index + 1).padStart(2, '0'));
+  const required = Boolean(year || month || day);
+  return h('label', { className: 'wide-field' },
     h('span', null, label),
     h('div', { className: 'date-picker' },
-      h('select', { value: day, onChange: (event) => emit(year, month, event.target.value) }, h('option', { value: '' }, 'День'), days.map((item) => h('option', { key: item, value: item }, item))),
-      h('select', { value: month, onChange: (event) => emit(year, event.target.value, day) }, h('option', { value: '' }, 'Месяц'), months.map((item) => h('option', { key: item, value: item }, item))),
-      h('select', { value: year, onChange: (event) => emit(event.target.value, month, day) }, h('option', { value: '' }, 'Год'), years.map((item) => h('option', { key: item, value: item }, item))),
+      h('select', { 'aria-label': `${label}: день`, required, value: day, onChange: (event) => emit(year, month, event.target.value) }, h('option', { value: '' }, 'День'), days.map((item) => h('option', { key: item, value: item }, item))),
+      h('select', { 'aria-label': `${label}: месяц`, required, value: month, onChange: (event) => emit(year, event.target.value, day) }, h('option', { value: '' }, 'Месяц'), months.map((item) => h('option', { key: item, value: item }, item))),
+      h('select', { 'aria-label': `${label}: год`, required, value: year, onChange: (event) => emit(event.target.value, month, day) }, h('option', { value: '' }, 'Год'), years.map((item) => h('option', { key: item, value: item }, item))),
     ),
   );
 }
@@ -1034,86 +842,5 @@ function ExchangeDialog({ draft, sourceCar, onChange, onCancel, onConfirm }) {
   );
 }
 
-function Metric({ label, value, accent }) {
-  return h('div', { className: 'metric' }, h('span', null, label), h('strong', { className: accent }, value));
-}
-
-function Detail({ label, value }) {
-  if (!value) return null;
-  return h('span', null, `${label}: ${value}`);
-}
-
-function getExchangeChain(car, carById) {
-  if (!car || !carById) return [];
-  const chain = [];
-  const seen = new Set();
-  let current = car;
-  while (current?.exchangePreviousCarId && carById[current.exchangePreviousCarId] && !seen.has(current.exchangePreviousCarId)) {
-    seen.add(current.id);
-    current = carById[current.exchangePreviousCarId];
-  }
-  while (current && !seen.has(current.id)) {
-    chain.push(current);
-    seen.add(current.id);
-    current = current.exchangeNextCarId ? carById[current.exchangeNextCarId] : null;
-  }
-  return chain;
-}
-
-function CarCard({ car, carById, onEdit, onExchange, onRemove, deleting, busy }) {
-  const { totalCost, netProfit, roi, hasActualSale } = calculateTotals(car);
-  const previousCar = carById?.[car.exchangePreviousCarId];
-  const nextCar = carById?.[car.exchangeNextCarId];
-  const exchangeChain = getExchangeChain(car, carById);
-  return h('article', { className: 'car-card' },
-    h('div', { className: 'car-photo' }, car.photo ? h('img', { src: car.photo, alt: `${car.make} ${car.model}` }) : icon('🚘')),
-    h('div', { className: 'car-info' },
-      h('div', { className: 'car-heading' },
-        h('div', null,
-          h('h3', null, `${car.make} ${car.model}`),
-          h('p', null, `${car.year || 'Год не указан'} • VIN ${car.vin}`),
-        ),
-        h('span', { className: `status status-${car.status}` }, `${car.acquisitionType === 'exchange' ? '🔁 ' : ''}${statusLabels[car.status]}`),
-      ),
-      h('div', { className: 'metrics' },
-        h(Metric, { label: 'Общая себестоимость', value: formatMoney(totalCost) }),
-        h(Metric, { label: 'План продажи', value: car.plannedSalePrice ? formatMoney(toNumber(car.plannedSalePrice)) : '—' }),
-        h(Metric, { label: 'Факт продажи', value: hasActualSale ? formatMoney(toNumber(car.actualSalePrice)) : '—' }),
-        h(Metric, {
-          label: 'Чистая прибыль',
-          value: hasActualSale ? formatMoney(netProfit) : 'Ожидается',
-          accent: netProfit >= 0 ? 'positive' : 'negative',
-        }),
-        h(Metric, {
-          label: 'Рентабельность',
-          value: hasActualSale ? formatPercent(roi) : '—',
-          accent: roi >= 0 ? 'positive' : 'negative',
-        }),
-        h(Metric, { label: 'Статус сделки', value: statusLabels[car.status] }),
-      ),
-      h('div', { className: 'dates' },
-        h('span', null, `Покупка: ${car.purchaseDate || '—'}`),
-        h('span', null, `Продажа: ${car.saleDate || '—'}`),
-        h(Detail, { label: 'Покупатель', value: car.buyerContact }),
-      ),
-      (car.acquisitionType === 'exchange' || car.status === 'exchanged' || previousCar || nextCar) ? h('div', { className: 'deal-history' },
-        h('strong', null, '🔁 История сделки'),
-        car.status === 'exchanged' && nextCar ? h('span', null, `Обменян на ${nextCar.make} ${nextCar.model} ${nextCar.year || ''}`.trim()) : null,
-        car.acquisitionType === 'exchange' ? h('span', null, 'Получен по обмену') : null,
-        h(Detail, { label: 'Получен от', value: getCarTitle(previousCar) !== '—' ? getCarTitle(previousCar) : `${car.exchangeSourceMake} ${car.exchangeSourceModel} ${car.exchangeSourceVin}`.trim() }),
-        h(Detail, { label: 'Передан в', value: getCarTitle(nextCar) !== '—' ? getCarTitle(nextCar) : '' }),
-        h('span', null, getExchangePaymentSummary(car.exchangePaymentType, car.exchangePaymentAmount)),
-        h(Detail, { label: 'Комментарий', value: car.exchangeComment }),
-        exchangeChain.length > 1 ? h('div', { className: 'exchange-chain' }, exchangeChain.map((item, index) => h('span', { key: item.id }, `${index ? '↓ ' : ''}${item.make} ${item.model}`))) : null,
-      ) : null,
-      car.notes ? h('p', { className: 'notes' }, car.notes) : null,
-      h('div', { className: 'card-actions' },
-        h('button', { className: 'secondary-button', type: 'button', disabled: busy || deleting || car.status === 'exchanged', onClick: () => onExchange(car) }, 'Обменять'),
-        h('button', { className: 'secondary-button', type: 'button', disabled: busy || deleting, onClick: () => onEdit(car) }, 'Редактировать'),
-        h('button', { className: 'ghost-button', type: 'button', disabled: deleting || busy, onClick: () => onRemove(car.id) }, deleting ? 'Удаляем...' : 'Удалить'),
-      ),
-    ),
-  );
-}
 
 createRoot(document.getElementById('root')).render(h(App));
